@@ -1,6 +1,6 @@
 from flask import Flask, request
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 VERIFY_TOKEN = "thuoclao123"
 
@@ -26,3 +26,4 @@ def webhook():
 
 if _name_ == "_main_":
     app.run()
+
