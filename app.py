@@ -12,12 +12,10 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not OPENAI_API_KEY:
         print("OPENAI_API_KEY not found")
         return None
-    return OpenAI(api_key=api_key)
-
+    return OpenAI(api_key=OPENAI_API_KEY)
 # ====== WEBHOOK VERIFY ======
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -96,6 +94,7 @@ def send_message(sender_id, message):
 # ====== RUN ======
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
