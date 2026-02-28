@@ -1,13 +1,19 @@
-from flask import Flask, request
-import requests
 import os
+import requests
+from flask import Flask, request
+
+from openai import OpenAI
 
 app = Flask(__name__)
 
+# ====== CẤU HÌNH ======
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = "thuoclao123"
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ====== VERIFY WEBHOOK ======
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# ====== WEBHOOK VERIFY ======
 @app.route("/webhook", methods=["GET"])
 def verify():
     token_sent = request.args.get("hub.verify_token")
@@ -15,81 +21,70 @@ def verify():
 
     if token_sent == VERIFY_TOKEN:
         return challenge
-    return "Verify token mismatch", 403
+    return "Invalid verification token"
 
 
-# ====== HANDLE MESSAGE ======
+# ====== WEBHOOK RECEIVE MESSAGE ======
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
 
-    if data.get("object") == "page":
-        for entry in data.get("entry", []):
-            for messaging in entry.get("messaging", []):
-                sender_id = messaging["sender"]["id"]
+    if "entry" in data:
+        for entry in data["entry"]:
+            for messaging_event in entry["messaging"]:
+                sender_id = messaging_event["sender"]["id"]
 
-                if "message" in messaging:
-                    message_text = messaging["message"].get("text", "")
+                if "message" in messaging_event and "text" in messaging_event["message"]:
+                    message_text = messaging_event["message"]["text"]
                     handle_message(sender_id, message_text)
 
-    return "ok", 200
+    return "OK", 200
 
 
+# ====== AI HANDLE MESSAGE ======
 def handle_message(sender_id, message_text):
-    message_text = message_text.lower()
 
-    if "giá" in message_text or "bao nhiêu" in message_text:
-        reply = (
-            "🔥 Thuốc lào Quảng Định:\n"
-            "💰 Loại 1: 100k/gói\n"
-            "💰 Loại đặc biệt: 150k/gói\n"
-            "Anh/chị cần lấy loại nào ạ?"
-        )
-    elif "free" in message_text:
-    reply = (
-        "🎁 Bên em free ship khi lấy từ 3 gói trở lên anh/chị nhé!\n"
-        "Anh/chị đang ở khu vực nào ạ?"
+    prompt = f"""
+Bạn là nhân viên bán thuốc lào Quảng Định.
+
+Thông tin sản phẩm:
+- Loại 1: 100k/gói
+- Loại đặc biệt: 150k/gói
+- Free ship khi mua từ 3 gói trở lên
+- Giao hàng toàn quốc
+- Nhận hàng kiểm tra rồi thanh toán
+- Số điện thoại: 0868862907
+
+Trả lời khách tự nhiên, thân thiện, chốt sale khéo léo.
+Trả lời ngắn gọn, rõ ràng.
+
+Khách hỏi: {message_text}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Bạn là nhân viên bán hàng chuyên nghiệp."},
+            {"role": "user", "content": prompt}
+        ]
     )
-    elif "ship" in message_text or "giao" in message_text:
-        reply = "🚚 Bên em giao hàng toàn quốc, nhận hàng kiểm tra rồi thanh toán."
 
-    elif "chốt" in message_text or "đặt" in message_text or "mua" in message_text:
-        reply = (
-            "✅ Anh/chị cho em xin:\n"
-            "📍 Địa chỉ nhận hàng\n"
-            "📞 Số điện thoại\n"
-            "📦 Số lượng cần lấy\n\n"
-            "Bên em lên đơn ngay ạ!"
-        )
-
-    elif "sỉ" in message_text or "buôn" in message_text:
-        reply = "📦 Có giá sỉ khi lấy số lượng lớn. Gọi 0868862907 để được giá tốt nhất!"
-
-    else:
-        reply = (
-            "Chào anh/chị 👋\n"
-            "Thuốc lào Quảng Định thơm đậm, nguyên chất.\n"
-            "💰 100k và 150k tuỳ loại.\n"
-            "Anh/chị cần tư vấn gì thêm ạ?"
-        )
-
+    reply = response.choices[0].message.content
     send_message(sender_id, reply)
 
 
-def send_message(recipient_id, message_text):
-    url = "https://graph.facebook.com/v18.0/me/messages"
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    headers = {"Content-Type": "application/json"}
+# ====== SEND MESSAGE TO FACEBOOK ======
+def send_message(sender_id, message):
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+
     payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message_text}
+        "recipient": {"id": sender_id},
+        "message": {"text": message}
     }
 
-    requests.post(url, params=params, headers=headers, json=payload)
+    requests.post(url, json=payload)
 
 
+# ====== RUN ======
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
-
-
-
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
