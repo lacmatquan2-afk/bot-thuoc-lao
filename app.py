@@ -1,40 +1,56 @@
 from flask import Flask, request
+import requests
 import os
 
-app = Flask(__name__)
+app = Flask(_name_)
 
+# ====== CẤU HÌNH ======
 VERIFY_TOKEN = "thuoclao123"
 PAGE_ACCESS_TOKEN = "EAFwl3GoHM8QBQ9SPSefGm5MblScbGgol066ikCAo8IkzdUpI4WC1dzy0PBBlgKJl8M7U0k0R4UzptgVn1HdyhCDt9aFZA0959fKyKocDXimRiI4SGXZAHoZA1qpODe0DVavpvhVGdeMkO3bUBZAf2U7ZBrE1z6C8EQyxZAX4gHtyIUitb9cX2ElsrDHJ8FmWb72ShCJlZB492rK2GoltZAq7nmFi"
 
+
+# ====== TRANG CHỦ ======
 @app.route("/")
 def home():
-    return "Bot thuốc lào Quảng Định đang chạy!"
+    return "Bot Thuốc Lào Quảng Định đang chạy!"
 
+
+# ====== WEBHOOK ======
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+
+    # ===== XÁC MINH WEBHOOK =====
     if request.method == "GET":
-    mode = request.args.get("hub_mode")
-    token = request.args.get("hub_verify_token")
-    challenge = request.args.get("hub_challenge")
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
 
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge, 200
-    else:
-        return "Verify token mismatch", 403
+        if mode == "subscribe" and token == VERIFY_TOKEN:
+            return challenge, 200
+        else:
+            return "Verify token mismatch", 403
 
+    # ===== NHẬN TIN NHẮN =====
     if request.method == "POST":
-    data = request.get_json()
+        data = request.get_json()
 
-    if data["object"] == "page":
-        for entry in data["entry"]:
-            for messaging in entry["messaging"]:
-                if "message" in messaging:
-                    sender_id = messaging["sender"]["id"]
-                    send_message(sender_id, "Chào anh/chị 👋 Thuốc lào Quảng Định thơm đậm, nguyên chất. Liên hệ 0868862907 để đặt hàng nhé!")
+        if data.get("object") == "page":
+            for entry in data.get("entry", []):
+                for messaging in entry.get("messaging", []):
+                    if "message" in messaging:
+                        sender_id = messaging["sender"]["id"]
 
-    return "OK", 200
-    import requests
+                        send_message(
+                            sender_id,
+                            "Chào anh/chị 👋\n"
+                            "Thuốc lào Quảng Định thơm đậm, nguyên chất.\n"
+                            "📞 Liên hệ 0868862907 để đặt hàng nhé!"
+                        )
 
+        return "OK", 200
+
+
+# ====== HÀM GỬI TIN NHẮN ======
 def send_message(recipient_id, message_text):
     url = f"https://graph.facebook.com/v25.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
 
@@ -44,9 +60,9 @@ def send_message(recipient_id, message_text):
     }
 
     requests.post(url, json=payload)
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 
-
-
+# ====== CHẠY SERVER ======
+if _name_ == "_main_":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
