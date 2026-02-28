@@ -40,24 +40,33 @@ def handle_message(sender_id, message_text):
 
     if "giá" in message_text or "bao nhiêu" in message_text:
         reply = (
-            "🔥 Thuốc lào Quảng Định thơm đậm, nguyên chất:\n"
+            "🔥 Thuốc lào Quảng Định:\n"
             "💰 Loại 1: 100k/gói\n"
             "💰 Loại đặc biệt: 150k/gói\n"
-            "📞 0868862907 đặt hàng ngay!"
+            "Anh/chị cần lấy loại nào ạ?"
         )
 
     elif "ship" in message_text or "giao" in message_text:
-        reply = "🚚 Bên em giao hàng toàn quốc anh/chị nhé! Nhận hàng kiểm tra rồi thanh toán."
+        reply = "🚚 Bên em giao hàng toàn quốc, nhận hàng kiểm tra rồi thanh toán."
+
+    elif "chốt" in message_text or "đặt" in message_text or "mua" in message_text:
+        reply = (
+            "✅ Anh/chị cho em xin:\n"
+            "📍 Địa chỉ nhận hàng\n"
+            "📞 Số điện thoại\n"
+            "📦 Số lượng cần lấy\n\n"
+            "Bên em lên đơn ngay ạ!"
+        )
 
     elif "sỉ" in message_text or "buôn" in message_text:
-        reply = "📦 Có giá sỉ cho anh/chị lấy số lượng lớn. Liên hệ 0868862907 để được báo giá tốt nhất!"
+        reply = "📦 Có giá sỉ khi lấy số lượng lớn. Gọi 0868862907 để được giá tốt nhất!"
 
     else:
         reply = (
             "Chào anh/chị 👋\n"
             "Thuốc lào Quảng Định thơm đậm, nguyên chất.\n"
             "💰 100k và 150k tuỳ loại.\n"
-            "📞 0868862907 đặt hàng ngay!"
+            "Anh/chị cần tư vấn gì thêm ạ?"
         )
 
     send_message(sender_id, reply)
@@ -77,3 +86,4 @@ def send_message(recipient_id, message_text):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
