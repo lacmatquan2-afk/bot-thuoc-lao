@@ -48,7 +48,7 @@ def webhook():
 
 # ====== AI HANDLE MESSAGE ======
 def handle_message(sender_id, message_text):
-client = get_openai_client()
+    client = get_openai_client()
 
     if not client:
         return
@@ -96,5 +96,6 @@ def send_message(sender_id, message):
 # ====== RUN ======
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
