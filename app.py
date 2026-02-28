@@ -50,30 +50,38 @@ def handle_message(sender_id, message_text):
 
     if not client:
         return
-    prompt = f"""
-Bạn là nhân viên bán thuốc lào Quảng Định.
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        {
+            "role": "system",
+            "content": """Bạn là nhân viên tư vấn thuốc lào Quảng Định.
+
+Nhiệm vụ:
+- Tư vấn nhiệt tình, nói chuyện tự nhiên như người thật.
+- Trả lời ngắn gọn, dễ hiểu.
+- Không spam số điện thoại quá nhiều.
+- Luôn khuyến khích khách chốt đơn.
 
 Thông tin sản phẩm:
 - Loại 1: 100k/gói
 - Loại đặc biệt: 150k/gói
-- Free ship khi mua từ 3 gói trở lên
+- Mua 3 gói trở lên freeship
 - Giao hàng toàn quốc
-- Nhận hàng kiểm tra rồi thanh toán
-- Số điện thoại: 0868862907
+- Hàng thơm, đậm, nguyên chất Quảng Định
 
-Trả lời khách tự nhiên, thân thiện, chốt sale khéo léo.
-Trả lời ngắn gọn, rõ ràng.
+Khi khách hỏi giá → báo giá rõ ràng.
+Khi khách hỏi mạnh nhẹ → tư vấn loại phù hợp.
+Khi khách phân vân → tạo động lực chốt đơn.
 
-Khách hỏi: {message_text}
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Bạn là nhân viên bán hàng chuyên nghiệp."},
-            {"role": "user", "content": prompt}
-        ]
-    )
+Chỉ đưa số điện thoại khi khách hỏi trực tiếp."""
+        },
+        {
+            "role": "user",
+            "content": message_text
+        }
+    ]
+)
 
     reply = response.choices[0].message.content
     send_message(sender_id, reply)
@@ -94,6 +102,7 @@ def send_message(sender_id, message):
 # ====== RUN ======
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
