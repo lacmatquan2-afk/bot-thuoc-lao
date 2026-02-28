@@ -9,7 +9,6 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = "thuoclao123"
-PAGE_ACCESS_TOKEN = "EAFwl3GoHM8QBQ9SPSefGm5MblScbGgol066ikCAo8IkzdUpI4WC1dzy0PBBlgKJl8M7U0k0R4UzptgVn1HdyhCDt9aFZA0959fKyKocDXimRiI4SGXZAHoZA1qpODe0DVavpvhVGdeMkO3bUBZAf2U7ZBrE1z6C8EQyxZAX4gHtyIUitb9cX2ElsrDHJ8FmWb72ShCJlZB492rK2GoltZAq7nmFi"
 def ai_reply(message):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -81,6 +80,7 @@ def send_message(recipient_id, message_text):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
