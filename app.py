@@ -4,22 +4,18 @@ import os
 
 app = Flask(_name_)
 
-# ====== CẤU HÌNH ======
 VERIFY_TOKEN = "thuoclao123"
 PAGE_ACCESS_TOKEN = "EAFwl3GoHM8QBQ9SPSefGm5MblScbGgol066ikCAo8IkzdUpI4WC1dzy0PBBlgKJl8M7U0k0R4UzptgVn1HdyhCDt9aFZA0959fKyKocDXimRiI4SGXZAHoZA1qpODe0DVavpvhVGdeMkO3bUBZAf2U7ZBrE1z6C8EQyxZAX4gHtyIUitb9cX2ElsrDHJ8FmWb72ShCJlZB492rK2GoltZAq7nmFi"
 
 
-# ====== TRANG CHỦ ======
 @app.route("/")
 def home():
     return "Bot Thuốc Lào Quảng Định đang chạy!"
 
 
-# ====== WEBHOOK ======
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
 
-    # ===== XÁC MINH WEBHOOK =====
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
@@ -30,7 +26,7 @@ def webhook():
         else:
             return "Verify token mismatch", 403
 
-    # ===== NHẬN TIN NHẮN =====
+
     if request.method == "POST":
         data = request.get_json()
 
@@ -44,13 +40,12 @@ def webhook():
                             sender_id,
                             "Chào anh/chị 👋\n"
                             "Thuốc lào Quảng Định thơm đậm, nguyên chất.\n"
-                            "📞 Liên hệ 0868862907 để đặt hàng nhé!"
+                            "📞 0868862907 đặt hàng ngay!"
                         )
 
         return "OK", 200
 
 
-# ====== HÀM GỬI TIN NHẮN ======
 def send_message(recipient_id, message_text):
     url = f"https://graph.facebook.com/v25.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
 
@@ -62,7 +57,6 @@ def send_message(recipient_id, message_text):
     requests.post(url, json=payload)
 
 
-# ====== CHẠY SERVER ======
 if _name_ == "_main_":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
