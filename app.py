@@ -83,7 +83,7 @@ Chỉ đưa số điện thoại khi khách hỏi trực tiếp."""
     ]
 )
 
-    reply = response.choices[0].message.content
+reply = response.choices[0].message.content
     send_message(sender_id, reply)
 
 
@@ -102,6 +102,7 @@ def send_message(sender_id, message):
 # ====== RUN ======
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
 
 
