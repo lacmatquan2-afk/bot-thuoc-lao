@@ -1,153 +1,117 @@
 from flask import Flask, request
 import requests
 import os
-from openai import OpenAI
 
-app = Flask(__name__)
+app = Flask(_name_)
 
-# ====== ENV ======
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# ===============================
+# HÀM GỬI TIN NHẮN
+# ===============================
+def send_message(recipient_id, message_text):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text}
+    }
 
-# ====== LƯU TRẠNG THÁI KHÁCH ======
-user_state = {}
+    requests.post(url, json=payload)
 
-# ====== TRANG CHỦ (CHO RENDER) ======
+
+# ===============================
+# TRANG CHỦ (Render kiểm tra sống)
+# ===============================
 @app.route("/", methods=["GET"])
 def home():
-    return "Bot thuốc lào Quảng Định PRO đang chạy!", 200
+    return "Bot thuốc lào Quảng Định đang chạy!"
 
 
-# ====== VERIFY FACEBOOK ======
+# ===============================
+# XÁC THỰC WEBHOOK FACEBOOK
+# ===============================
 @app.route("/webhook", methods=["GET"])
 def verify():
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
     if token == VERIFY_TOKEN:
-        return challenge, 200
-    return "Verification failed", 403
+        return challenge
+    return "Sai verify token"
 
 
-# ====== NHẬN TIN NHẮN ======
+# ===============================
+# NHẬN TIN NHẮN TỪ FACEBOOK
+# ===============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
 
-    if data and "entry" in data:
+    if "entry" in data:
         for entry in data["entry"]:
-            for messaging_event in entry.get("messaging", []):
+            for messaging_event in entry["messaging"]:
+                sender_id = messaging_event["sender"]["id"]
+
                 if "message" in messaging_event:
-                    sender_id = messaging_event["sender"]["id"]
-                    message_text = messaging_event["message"].get("text")
+                    user_message = messaging_event["message"].get("text", "")
+                    handle_message(sender_id, user_message)
 
-                    if message_text:
-                        handle_message(sender_id, message_text.lower())
-
-    return "OK", 200
+    return "ok", 200
 
 
-# ====== XỬ LÝ KỊCH BẢN BÁN HÀNG ======
-def handle_message(sender_id, text):
+# ===============================
+# XỬ LÝ NỘI DUNG TIN NHẮN
+# ===============================
+def handle_message(sender_id, message):
+    text = message.lower()
 
-    # Nếu khách đang trong quy trình đặt hàng
-    if sender_id in user_state:
-        state = user_state[sender_id]
+    # --- Khi khách hỏi giá ---
+    if "giá" in text or "bao nhiêu" in text:
+        reply = """Dạ bên em có 2 loại thuốc lào Quảng Định:
 
-        if state == "ask_quantity":
-            user_state[sender_id] = {"quantity": text, "step": "ask_address"}
-            send_message(sender_id, "Anh gửi giúp em địa chỉ nhận hàng nhé 📦")
-            return
+🔥 Loại thường: 90.000đ / 1 lạng
+🔥 Loại đặc biệt: 150.000đ / 1 lạng
 
-        if isinstance(state, dict) and state.get("step") == "ask_address":
-            state["address"] = text
-            state["step"] = "ask_phone"
-            send_message(sender_id, "Anh cho em xin số điện thoại nhận hàng ☎️")
-            return
-
-        if isinstance(state, dict) and state.get("step") == "ask_phone":
-            state["phone"] = text
-
-            summary = f"""✅ XÁC NHẬN ĐƠN HÀNG:
-
-Số lượng: {state['quantity']}
-Địa chỉ: {state['address']}
-SĐT: {state['phone']}
-
-Bên em sẽ gọi xác nhận và giao sớm nhất 🚚
-Liên hệ nhanh: 0868862907"""
-
-            send_message(sender_id, summary)
-            del user_state[sender_id]
-            return
-
-    # ====== CÂU HỎI PHỔ BIẾN ======
-
-    if "giá" in text:
-        send_message(sender_id,
-                     "Thuốc lào Quảng Định loại ngon giá chỉ từ 120k/kg 🔥\n"
-                     "Anh muốn lấy bao nhiêu kg ạ?")
-        user_state[sender_id] = "ask_quantity"
+Anh muốn chọn loại nào và lấy bao nhiêu lạng để em lên đơn ạ?
+Ship toàn quốc.
+Liên hệ: 0868862907"""
+        
+        send_message(sender_id, reply)
         return
 
-    if "ship" in text or "giao" in text:
-        send_message(sender_id,
-                     "Bên em giao hàng toàn quốc 🚚\n"
-                     "Phí ship tùy khu vực anh nhé.\n"
-                     "Anh muốn đặt mấy kg ạ?")
-        user_state[sender_id] = "ask_quantity"
+    # --- Khi khách muốn đặt ---
+    if "đặt" in text or "lấy" in text:
+        reply = """Dạ anh cho em xin:
+
+- Loại (90k hay 150k)
+- Số lạng
+- Địa chỉ nhận hàng
+- Số điện thoại
+
+Em sẽ xác nhận đơn ngay ạ.
+Hotline: 0868862907"""
+        
+        send_message(sender_id, reply)
         return
 
-    if "loại" in text or "ngon" in text:
-        send_message(sender_id,
-                     "Hiện có:\n"
-                     "1️⃣ Loại thơm nhẹ\n"
-                     "2️⃣ Loại nặng đô\n"
-                     "3️⃣ Loại đặc biệt chọn lọc 🔥\n\n"
-                     "Anh thích loại nào ạ?")
-        return
+    # --- Tin nhắn mặc định ---
+    reply = """Chào anh 👋
 
-    # ====== NGOÀI KỊCH BẢN → DÙNG AI ======
-    reply = ask_openai(text)
+Bên em chuyên thuốc lào Quảng Định chính hãng.
+
+🔥 Loại thường: 90.000đ / lạng
+🔥 Loại đặc biệt: 150.000đ / lạng
+
+Anh cần tư vấn hay đặt hàng ạ?
+Gọi ngay: 0868862907"""
+
     send_message(sender_id, reply)
 
 
-# ====== HỎI OPENAI ======
-def ask_openai(user_message):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "Bạn là nhân viên bán thuốc lào Quảng Định. Trả lời ngắn gọn, thân thiện, luôn kèm số 0868862907."
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
-        ]
-    )
-
-    return response.choices[0].message.content
-
-
-# ====== GỬI TIN NHẮN FACEBOOK ======
-def send_message(sender_id, message):
-    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-
-    payload = {
-        "recipient": {"id": sender_id},
-        "message": {"text": message}
-    }
-
-    requests.post(url, json=payload)
-
-
-# ====== CHẠY LOCAL ======
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
+# ===============================
+# CHẠY SERVER
+# ===============================
+if _name_ == "_main_":
+    app.run(host="0.0.0.0", port=10000)
