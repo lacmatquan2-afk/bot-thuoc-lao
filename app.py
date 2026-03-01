@@ -119,7 +119,7 @@ def verify():
 # ================= WEBHOOK =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    data = request.get_json(silent=true) or {}
 
     if data.get("object") != "page":
         return "ok"
@@ -185,4 +185,6 @@ def webhook():
 
 # ================= RUN =================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT"), 10000)
+    app.run(host="0.0.0.0", port=port)
+
