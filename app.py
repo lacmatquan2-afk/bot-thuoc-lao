@@ -1,260 +1,188 @@
-from flask import Flask, request
-import requests
 import os
-import sqlite3
 import re
+import requests
 from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, request
 from openai import OpenAI
 
 app = Flask(__name__)
 
-# =========================
-# ENV (SET TRONG RENDER)
-# =========================
-PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-PAGE_ID = os.environ.get("PAGE_ID")
+# ================= CONFIG =================
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+PAGE_ID = os.getenv("PAGE_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# =========================
-# DATABASE
-# =========================
-def init_db():
-    conn = sqlite3.connect("orders.db")
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS orders(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fb_id TEXT,
-            name TEXT,
-            phone TEXT,
-            address TEXT,
-            created_at TEXT
+user_data = {}
+last_post_date = None
+
+# ================= HELPER =================
+def send_message(psid, text):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {"recipient": {"id": psid}, "message": {"text": text}}
+    requests.post(url, json=payload)
+
+def reply_comment(comment_id, text):
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, json={"message": text})
+
+def send_telegram(text):
+    if TELEGRAM_TOKEN:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        requests.post(url, data=payload)
+
+def auto_post():
+    global last_post_date
+    today = datetime.now().date()
+
+    if last_post_date == today:
+        return
+
+    message = (
+        "🔥 THUỐC LÀO QUẢNG ĐỊNH CHÍNH GỐC 🔥\n\n"
+        "✔ Loại 1: 100k\n"
+        "✔ Loại đặc biệt: 150k\n\n"
+        "Ship toàn quốc 🚚\n"
+        "Comment 'mua' để được tư vấn ngay!"
+    )
+
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, data={"message": message})
+
+    last_post_date = today
+
+def is_phone(text):
+    return re.fullmatch(r"0\d{9}", text)
+
+def ai_reply(user_text):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content":
+                 "Bạn là nhân viên bán thuốc lào Quảng Định. "
+                 "Giá 100k và 150k. "
+                 "Ưu tiên upsell loại 150k. "
+                 "Trả lời ngắn gọn, chốt đơn khéo léo."},
+                {"role": "user", "content": user_text}
+            ]
         )
-    """)
-    conn.commit()
-    conn.close()
+        return response.choices[0].message.content
+    except:
+        return "Anh quan tâm loại 100k hay 150k ạ?"
 
-init_db()
+# ================= HOME =================
+@app.route("/")
+def home():
+    auto_post()
+    return "KING MAXIMUM V5 TITAN MODE 👑 ĐANG HOẠT ĐỘNG"
 
-# =========================
-# MEMORY TRẠNG THÁI KHÁCH
-# =========================
-user_states = {}
+# ================= PRIVACY =================
+@app.route("/privacy")
+def privacy():
+    return """<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Privacy Policy</title>
+</head>
+<body>
+<h1>Chính sách quyền riêng tư</h1>
+<p>Bot dùng để trả lời tin nhắn và xử lý đơn hàng.</p>
+<ul>
+<li>Loại 1: 100.000 VNĐ</li>
+<li>Loại đặc biệt: 150.000 VNĐ</li>
+</ul>
+<p>Dữ liệu chỉ dùng để giao hàng.</p>
+</body>
+</html>"""
 
-# =========================
-# VERIFY WEBHOOK
-# =========================
+# ================= DATA DELETE =================
+@app.route("/data-deletion")
+def delete():
+    return "<h1>Yêu cầu xóa dữ liệu: gửi email về lacmatquan2@gmail.com</h1>"
+
+# ================= VERIFY =================
 @app.route("/webhook", methods=["GET"])
 def verify():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
         return request.args.get("hub.challenge")
-    return "Error", 403
+    return "Verification failed", 403
 
-# =========================
-# MAIN WEBHOOK
-# =========================
+# ================= WEBHOOK =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.json
 
-    if data.get("object") == "page":
-        for entry in data.get("entry", []):
+    if data.get("object") != "page":
+        return "ok"
 
-            # ===== INBOX =====
-            if "messaging" in entry:
-                for msg in entry["messaging"]:
-                    sender_id = msg["sender"]["id"]
+    for entry in data.get("entry", []):
 
-                    if sender_id == PAGE_ID:
-                        continue
+        # ===== Messenger =====
+        for event in entry.get("messaging", []):
+            sender_id = event["sender"]["id"]
 
-                    if "message" in msg and "text" in msg["message"]:
-                        text = msg["message"]["text"]
+            if sender_id == PAGE_ID:
+                continue
 
-                        # Nếu đang trong quy trình chốt đơn
-                        if sender_id in user_states:
-                            handle_order_flow(sender_id, text)
-                            continue
+            if "message" in event:
+                text = event["message"].get("text", "").strip()
 
-                        # Kiểm tra có SĐT không
-                        phone = extract_phone(text)
-                        if phone:
-                            user_states[sender_id] = {
-                                "phone": phone,
-                                "step": "ask_address"
-                            }
-                            send_message(sender_id, "🔥 Em đã nhận SĐT. Anh/chị cho em xin địa chỉ giao hàng nhé?")
-                            continue
+                if sender_id not in user_data:
+                    user_data[sender_id] = {}
 
-                        reply = ai_reply(text)
-                        send_message(sender_id, reply)
+                # AUTO detect phone
+                if is_phone(text):
+                    user_data[sender_id]["phone"] = text
+                    send_message(sender_id, "Anh gửi giúp em ĐỊA CHỈ nhận hàng:")
+                    user_data[sender_id]["step"] = "address"
+                    continue
 
-            # ===== COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        value = change["value"]
+                # ADDRESS step
+                if user_data[sender_id].get("step") == "address":
+                    user_data[sender_id]["address"] = text
 
-                        if value.get("item") == "comment":
-                            comment_id = value.get("comment_id")
-                            from_id = value.get("from", {}).get("id")
-                            message = value.get("message", "")
+                    order = (
+                        f"📦 ĐƠN HÀNG TITAN\n"
+                        f"SĐT: {user_data[sender_id].get('phone')}\n"
+                        f"Địa chỉ: {text}\n"
+                        f"Thời gian: {datetime.now()}"
+                    )
 
-                            if from_id == PAGE_ID:
-                                continue
+                    send_telegram(order)
+                    send_message(sender_id, "✅ Đã chốt đơn thành công.")
+                    user_data[sender_id] = {}
+                    continue
 
-                            reply = ai_reply(message)
-                            reply_comment(comment_id, reply)
+                # AI MODE
+                reply = ai_reply(text)
+                send_message(sender_id, reply)
 
-                            # Tự inbox
-                            send_message(from_id, "👋 Em đã phản hồi dưới comment. Check inbox giúp em để chốt đơn nhé!")
+        # ===== COMMENT AUTO =====
+        for change in entry.get("changes", []):
+            if change.get("field") == "feed":
+                value = change.get("value", {})
+                comment_id = value.get("comment_id")
+                message = value.get("message", "").lower()
+                from_id = value.get("from", {}).get("id")
 
-                            phone = extract_phone(message)
-                            if phone:
-                                user_states[from_id] = {
-                                    "phone": phone,
-                                    "step": "ask_address"
-                                }
-                                send_message(from_id, "🔥 Em đã nhận SĐT. Anh/chị cho em xin địa chỉ giao hàng nhé?")
+                if from_id == PAGE_ID:
+                    continue
 
-    return "OK", 200
+                if any(word in message for word in ["giá", "bao nhiêu", "mua"]):
+                    reply_comment(comment_id,
+                        "Giá 100k & 150k. Shop đã inbox tư vấn chi tiết 🔥")
 
-# =========================
-# ORDER FLOW TỪNG BƯỚC
-# =========================
-def handle_order_flow(user_id, text):
-    state = user_states[user_id]
+    return "ok"
 
-    if state["step"] == "ask_address":
-        state["address"] = text
-        state["step"] = "ask_name"
-        send_message(user_id, "Cho em xin tên người nhận hàng ạ?")
-        return
-
-    if state["step"] == "ask_name":
-        state["name"] = text
-        save_order(user_id, state["name"], state["phone"], state["address"])
-        send_message(user_id, "✅ Đơn đã ghi nhận. Bên em sẽ liên hệ xác nhận và giao sớm nhất 🚚")
-        del user_states[user_id]
-
-# =========================
-# AI REPLY
-# =========================
-def ai_reply(text):
-    prompt = f"""
-Bạn là nhân viên bán thuốc lào Quảng Định.
-Trả lời ngắn gọn, thân thiện, mục tiêu chốt đơn.
-Khách nói: {text}
-"""
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return res.choices[0].message.content
-    except:
-        return "Thuốc lào Quảng Định thơm đậm 🔥 Liên hệ 0868862907"
-
-# =========================
-# EXTRACT PHONE
-# =========================
-def extract_phone(text):
-    phones = re.findall(r'0\d{9}', text)
-    return phones[0] if phones else None
-
-# =========================
-# SEND MESSAGE
-# =========================
-def send_message(user_id, text):
-    url = f"https://graph.facebook.com/v18.0/me/messages"
-    payload = {
-        "recipient": {"id": user_id},
-        "message": {"text": text}
-    }
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-    requests.post(url, params=params, json=payload)
-
-# =========================
-# REPLY COMMENT
-# =========================
-def reply_comment(comment_id, text):
-    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
-    requests.post(url, params={
-        "access_token": PAGE_ACCESS_TOKEN,
-        "message": text
-    })
-
-# =========================
-# SAVE ORDER
-# =========================
-def save_order(fb_id, name, phone, address):
-    conn = sqlite3.connect("orders.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO orders (fb_id, name, phone, address, created_at) VALUES (?, ?, ?, ?, ?)",
-              (fb_id, name, phone, address, datetime.now()))
-    conn.commit()
-    conn.close()
-
-    send_telegram(f"🔥 ĐƠN MỚI\nTên: {name}\nSĐT: {phone}\nĐịa chỉ: {address}")
-
-# =========================
-# TELEGRAM
-# =========================
-def send_telegram(text):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text
-        })
-
-# =========================
-# AUTO POST DAILY
-# =========================
-def auto_post():
-    content = "🔥 Thuốc lào Quảng Định thơm đậm – Ship toàn quốc 🚚 Liên hệ 0868862907"
-    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
-    requests.post(url, data={
-        "message": content,
-        "access_token": PAGE_ACCESS_TOKEN
-    })
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(auto_post, "interval", days=1)
-scheduler.start()
-
-# =========================
-# META REQUIRED
-# =========================
-@app.route("/")
-def home():
-    return "KING MAXIMUM V2 BOT ĐANG HOẠT ĐỘNG 👑"
-
-@app.route("/privacy")
-def privacy():
-    return """
-    <h1>Chính sách quyền riêng tư</h1>
-    <p>Ứng dụng dùng để trả lời tin nhắn và xử lý đơn hàng.</p>
-    <p>Không chia sẻ dữ liệu cho bên thứ ba.</p>
-    <p>Email: lacmatquan2@gmail.com</p>
-    """
-
-@app.route("/data-deletion")
-def data_deletion():
-    return """
-    <h1>Yêu cầu xóa dữ liệu</h1>
-    <p>Gửi email: lacmatquan2@gmail.com</p>
-    <p>Xử lý trong 24 giờ.</p>
-    """
-
-# =========================
-# RUN
-# =========================
+# ================= RUN =================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=10000)
