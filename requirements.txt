@@ -2,3 +2,5 @@ flask
 requests
 gunicorn
 openai>=1.0.0
+python-telegram-bot==20.7
+apscheduler
