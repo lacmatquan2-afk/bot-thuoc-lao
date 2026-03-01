@@ -1,37 +1,40 @@
 from flask import Flask, request
 import requests
 import os
+import csv
+from datetime import datetime
 
-app = Flask(__name__)
+app = Flask(_name_)
 
-PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+PAGE_ACCESS_TOKEN = "DAN_TOKEN_PAGE_VAO_DAY"
+VERIFY_TOKEN = "quanganh_bot"
 
-# ===============================
-# HÀM GỬI TIN NHẮN
-# ===============================
-def send_message(recipient_id, message_text):
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message_text}
-    }
-
-    requests.post(url, json=payload)
-
-
-# ===============================
-# TRANG CHỦ (Render kiểm tra sống)
-# ===============================
-@app.route("/", methods=["GET"])
+# ================== TRANG CHỦ ==================
+@app.route("/")
 def home():
-    return "Bot thuốc lào Quảng Định đang chạy!"
+    return "<h1>Bot thuốc lào Quảng Định PRO đang chạy 🔥</h1>"
 
+# ================== PRIVACY ==================
+@app.route("/privacy")
+def privacy():
+    return """
+    <h1>Chính sách quyền riêng tư</h1>
+    <p>Website dùng để tự động trả lời tin nhắn và bình luận Facebook.</p>
+    <p>Không chia sẻ dữ liệu người dùng.</p>
+    <p>Liên hệ: 0868862907</p>
+    """
 
-# ===============================
-# XÁC THỰC WEBHOOK FACEBOOK
-# ===============================
+# ================== TERMS ==================
+@app.route("/terms")
+def terms():
+    return """
+    <h1>Điều khoản dịch vụ</h1>
+    <p>Bot dùng để tư vấn và báo giá thuốc lào Quảng Định.</p>
+    <p>Free ship từ 3 lạng.</p>
+    <p>Liên hệ: 0868862907</p>
+    """
+
+# ================== VERIFY WEBHOOK ==================
 @app.route("/webhook", methods=["GET"])
 def verify():
     token = request.args.get("hub.verify_token")
@@ -39,80 +42,124 @@ def verify():
 
     if token == VERIFY_TOKEN:
         return challenge
-    return "Sai verify token"
+    return "Sai token"
 
-
-# ===============================
-# NHẬN TIN NHẮN TỪ FACEBOOK
-# ===============================
+# ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.json
 
     if "entry" in data:
         for entry in data["entry"]:
-            for messaging_event in entry["messaging"]:
-                sender_id = messaging_event["sender"]["id"]
 
-                if "message" in messaging_event:
-                    user_message = messaging_event["message"].get("text", "")
-                    handle_message(sender_id, user_message)
+            # ===== XỬ LÝ INBOX =====
+            if "messaging" in entry:
+                for messaging in entry["messaging"]:
 
-    return "ok", 200
+                    # ❌ Bỏ qua tin nhắn của page
+                    if messaging.get("message", {}).get("is_echo"):
+                        continue
 
+                    sender_id = messaging["sender"]["id"]
+                    message_text = messaging.get("message", {}).get("text", "").lower()
 
-# ===============================
-# XỬ LÝ NỘI DUNG TIN NHẮN
-# ===============================
-def handle_message(sender_id, message):
-    text = message.lower()
+                    if message_text:
+                        handle_inbox(sender_id, message_text)
 
-    # --- Khi khách hỏi giá ---
-    if "giá" in text or "bao nhiêu" in text:
-        reply = """Dạ bên em có 2 loại thuốc lào Quảng Định:
+            # ===== XỬ LÝ COMMENT =====
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        comment = change["value"]
+                        if "comment_id" in comment:
+                            handle_comment(comment)
 
-🔥 Loại thường: 90.000đ / 1 lạng
-🔥 Loại đặc biệt: 150.000đ / 1 lạng
+    return "ok"
 
-Anh muốn chọn loại nào và lấy bao nhiêu lạng để em lên đơn ạ?
-Ship toàn quốc.
-Liên hệ: 0868862907"""
-        
-        send_message(sender_id, reply)
+# ================== XỬ LÝ INBOX ==================
+def handle_inbox(sender_id, text):
+
+    if text.isdigit():
+        so_lang = int(text)
+
+        if so_lang <= 0:
+            send_message(sender_id, "Anh nhập số lạng hợp lệ giúp em ạ.")
+            return
+
+        gia = so_lang * 90000
+        ship = 0 if so_lang >= 3 else 30000
+        tong = gia + ship
+
+        save_order(sender_id, so_lang, tong)
+
+        message = f"""
+🧾 ĐƠN HÀNG
+
+Số lượng: {so_lang} lạng
+Giá: {gia:,}đ
+Ship: {ship:,}đ
+----------------
+TỔNG: {tong:,}đ
+
+Free ship từ 3 lạng 🔥
+Gọi xác nhận: 0868862907
+"""
+        send_message(sender_id, message)
         return
 
-    # --- Khi khách muốn đặt ---
-    if "đặt" in text or "lấy" in text:
-        reply = """Dạ anh cho em xin:
-
-- Loại (90k hay 150k)
-- Số lạng
-- Địa chỉ nhận hàng
-- Số điện thoại
-
-Em sẽ xác nhận đơn ngay ạ.
-Hotline: 0868862907"""
-        
-        send_message(sender_id, reply)
-        return
-
-    # --- Tin nhắn mặc định ---
-    reply = """Chào anh 👋
-
-Bên em chuyên thuốc lào Quảng Định chính hãng.
+    message = """
+Chào anh 👋
 
 🔥 Loại thường: 90.000đ / lạng
 🔥 Loại đặc biệt: 150.000đ / lạng
 
-Anh cần tư vấn hay đặt hàng ạ?
-Gọi ngay: 0868862907"""
+📦 Free ship từ 3 lạng
 
-    send_message(sender_id, reply)
+Anh nhập số lạng muốn mua (ví dụ: 2 hoặc 3)
+"""
+    send_message(sender_id, message)
 
+# ================== XỬ LÝ COMMENT ==================
+def handle_comment(comment):
+    comment_id = comment["comment_id"]
+    user_id = comment["from"]["id"]
 
-# ===============================
-# CHẠY SERVER
-# ===============================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    message = "Anh check inbox giúp em để nhận báo giá chi tiết nhé 🔥"
 
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments?access_token={PAGE_ACCESS_TOKEN}"
+
+    requests.post(url, json={"message": message})
+
+# ================== GỬI TIN NHẮN ==================
+def send_message(user_id, message):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+
+    requests.post(
+        url,
+        json={
+            "recipient": {"id": user_id},
+            "message": {"text": message}
+        }
+    )
+
+# ================== LƯU ĐƠN ==================
+def save_order(user_id, so_lang, tong):
+
+    file_exists = os.path.isfile("orders.csv")
+
+    with open("orders.csv", mode="a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+
+        if not file_exists:
+            writer.writerow(["Thời gian", "User ID", "Số lạng", "Tổng tiền"])
+
+        writer.writerow([
+            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            user_id,
+            so_lang,
+            tong
+        ])
+
+# ================== RUN ==================
+if _name_ == "_main_":
+    app.run(host="0.0.0.0", port=5000)
