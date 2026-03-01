@@ -1,40 +1,61 @@
 from flask import Flask, request
 import requests
 import os
-import csv
-from datetime import datetime
+import sqlite3
+import random
+import time
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(_name_)
 
-PAGE_ACCESS_TOKEN = "DAN_TOKEN_PAGE_VAO_DAY"
-VERIFY_TOKEN = "quanganh_bot"
+# ================== CONFIG ==================
+PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+PAGE_ID = os.environ.get("PAGE_ID")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-# ================== TRANG CHỦ ==================
+# ================== DATABASE ==================
+def init_db():
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS customers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id TEXT,
+        message TEXT,
+        level TEXT,
+        time TEXT,
+        remarketed INTEGER DEFAULT 0
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ================== HOME ==================
 @app.route("/")
 def home():
-    return "<h1>Bot thuốc lào Quảng Định PRO đang chạy 🔥</h1>"
+    return "<h1>👑 BOT SAFE MODE ĐANG CHẠY 🔥</h1>"
 
-# ================== PRIVACY ==================
-@app.route("/privacy")
-def privacy():
-    return """
-    <h1>Chính sách quyền riêng tư</h1>
-    <p>Website dùng để tự động trả lời tin nhắn và bình luận Facebook.</p>
-    <p>Không chia sẻ dữ liệu người dùng.</p>
-    <p>Liên hệ: 0868862907</p>
-    """
+# ================== ADMIN ==================
+@app.route("/admin")
+def admin():
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+    c.execute("SELECT * FROM customers ORDER BY id DESC")
+    data = c.fetchall()
+    conn.close()
 
-# ================== TERMS ==================
-@app.route("/terms")
-def terms():
-    return """
-    <h1>Điều khoản dịch vụ</h1>
-    <p>Bot dùng để tư vấn và báo giá thuốc lào Quảng Định.</p>
-    <p>Free ship từ 3 lạng.</p>
-    <p>Liên hệ: 0868862907</p>
-    """
+    html = "<h2>Danh sách khách</h2>"
+    for row in data:
+        html += f"<p>{row}</p>"
+    return html
 
-# ================== VERIFY WEBHOOK ==================
+# ================== VERIFY ==================
 @app.route("/webhook", methods=["GET"])
 def verify():
     token = request.args.get("hub.verify_token")
@@ -42,124 +63,180 @@ def verify():
 
     if token == VERIFY_TOKEN:
         return challenge
-    return "Sai token"
+    return "Sai verify token"
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    data = request.get_json()
 
-    if "entry" in data:
-        for entry in data["entry"]:
+    if data.get("object") == "page":
+        for entry in data.get("entry", []):
 
-            # ===== XỬ LÝ INBOX =====
-            if "messaging" in entry:
-                for messaging in entry["messaging"]:
+            for messaging_event in entry.get("messaging", []):
+                sender_id = messaging_event["sender"]["id"]
 
-                    # ❌ Bỏ qua tin nhắn của page
-                    if messaging.get("message", {}).get("is_echo"):
-                        continue
+                if "message" in messaging_event:
+                    message_text = messaging_event["message"].get("text", "")
+                    handle_message(sender_id, message_text)
 
-                    sender_id = messaging["sender"]["id"]
-                    message_text = messaging.get("message", {}).get("text", "").lower()
+            for change in entry.get("changes", []):
+                if change.get("field") == "feed":
+                    value = change.get("value", {})
+                    comment_id = value.get("comment_id")
+                    from_id = value.get("from", {}).get("id")
 
-                    if message_text:
-                        handle_inbox(sender_id, message_text)
+                    if comment_id:
+                        reply_comment(comment_id)
+                        if from_id:
+                            send_message(from_id, "🔥 Em đã inbox anh tư vấn chi tiết rồi ạ!")
 
-            # ===== XỬ LÝ COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        comment = change["value"]
-                        if "comment_id" in comment:
-                            handle_comment(comment)
+    return "OK", 200
 
-    return "ok"
+# ================== HANDLE MESSAGE ==================
+def handle_message(sender_id, message_text):
+    text = message_text.lower()
+    level = "cold"
 
-# ================== XỬ LÝ INBOX ==================
-def handle_inbox(sender_id, text):
+    if any(word in text for word in ["mua", "đặt", "lấy"]):
+        level = "hot"
 
-    if text.isdigit():
-        so_lang = int(text)
+    save_customer(sender_id, message_text, level)
 
-        if so_lang <= 0:
-            send_message(sender_id, "Anh nhập số lạng hợp lệ giúp em ạ.")
-            return
+    if any(word in text for word in ["giá", "bao nhiêu"]):
+        reply = "🔥 Thuốc lào Quảng Định thơm đậm\nGiá từ 3x/kg\nFree ship từ 3 lạng 🚚\nGọi/Zalo: 0868862907"
 
-        gia = so_lang * 90000
-        ship = 0 if so_lang >= 3 else 30000
-        tong = gia + ship
+    elif any(word in text for word in ["ship", "giao"]):
+        reply = "🚚 Ship toàn quốc\nNhận hàng kiểm tra rồi thanh toán."
 
-        save_order(sender_id, so_lang, tong)
+    elif any(word in text for word in ["sỉ", "đại lý"]):
+        reply = "💰 Có giá sỉ cho đại lý.\nLiên hệ: 0868862907"
 
-        message = f"""
-🧾 ĐƠN HÀNG
+    elif level == "hot":
+        reply = "🔥 Anh cho em xin SĐT + địa chỉ để chốt đơn nhé!"
 
-Số lượng: {so_lang} lạng
-Giá: {gia:,}đ
-Ship: {ship:,}đ
-----------------
-TỔNG: {tong:,}đ
+    else:
+        reply = ask_ai(message_text)
 
-Free ship từ 3 lạng 🔥
-Gọi xác nhận: 0868862907
-"""
-        send_message(sender_id, message)
-        return
+    send_message(sender_id, reply)
 
-    message = """
-Chào anh 👋
+# ================== AI ==================
+def ask_ai(message):
+    if not OPENAI_API_KEY:
+        return "Anh cần tư vấn loại nào ạ? 🔥"
 
-🔥 Loại thường: 90.000đ / lạng
-🔥 Loại đặc biệt: 150.000đ / lạng
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 
-📦 Free ship từ 3 lạng
+    data = {
+        "model": "gpt-4o-mini",
+        "temperature": 0.8,
+        "messages": [
+            {"role": "system", "content": "Bạn là nhân viên bán thuốc lào Quảng Định, nói chuyện tự nhiên, không spam."},
+            {"role": "user", "content": message}
+        ]
+    }
 
-Anh nhập số lạng muốn mua (ví dụ: 2 hoặc 3)
-"""
-    send_message(sender_id, message)
-
-# ================== XỬ LÝ COMMENT ==================
-def handle_comment(comment):
-    comment_id = comment["comment_id"]
-    user_id = comment["from"]["id"]
-
-    message = "Anh check inbox giúp em để nhận báo giá chi tiết nhé 🔥"
-
-    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments?access_token={PAGE_ACCESS_TOKEN}"
-
-    requests.post(url, json={"message": message})
-
-# ================== GỬI TIN NHẮN ==================
-def send_message(user_id, message):
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-
-    requests.post(
-        url,
-        json={
-            "recipient": {"id": user_id},
-            "message": {"text": message}
-        }
+    r = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=data
     )
 
-# ================== LƯU ĐƠN ==================
-def save_order(user_id, so_lang, tong):
+    return r.json()["choices"][0]["message"]["content"]
 
-    file_exists = os.path.isfile("orders.csv")
+# ================== SEND MESSAGE ==================
+def send_message(sender_id, message):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": sender_id},
+        "message": {"text": message}
+    }
+    requests.post(url, json=payload)
 
-    with open("orders.csv", mode="a", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
+# ================== COMMENT REPLY ==================
+def reply_comment(comment_id):
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+    payload = {
+        "message": "🔥 Check inbox giúp em nhé anh!",
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post(url, data=payload)
 
-        if not file_exists:
-            writer.writerow(["Thời gian", "User ID", "Số lạng", "Tổng tiền"])
+# ================== SAVE DB ==================
+def save_customer(sender_id, message_text, level):
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
-        writer.writerow([
-            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            user_id,
-            so_lang,
-            tong
-        ])
+    c.execute(
+        "INSERT INTO customers (sender_id, message, level, time) VALUES (?, ?, ?, ?)",
+        (sender_id, message_text, level, datetime.now().isoformat())
+    )
+
+    conn.commit()
+    conn.close()
+
+# ================== SAFE REMARKETING ==================
+def remarketing():
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+
+    c.execute("""
+    SELECT id, sender_id, time FROM customers
+    WHERE level='hot' AND remarketed=0
+    """)
+
+    users = c.fetchall()
+
+    for user in users:
+        record_id, sender_id, created_time = user
+        created_time = datetime.fromisoformat(created_time)
+
+        if datetime.now() - created_time <= timedelta(hours=24):
+
+            messages = [
+                "🔥 Em còn giữ giá tốt cho anh hôm nay nhé!",
+                "🚚 Hôm nay chốt em free ship cho anh nhé!",
+                "💨 Thuốc đang rất thơm, anh chốt giúp em nhé!"
+            ]
+
+            send_message(sender_id, random.choice(messages))
+
+            c.execute("UPDATE customers SET remarketed=1 WHERE id=?", (record_id,))
+            conn.commit()
+
+            time.sleep(5)
+
+    conn.close()
+
+# ================== AUTO POST ==================
+def auto_post():
+    if not PAGE_ID:
+        return
+
+    content = """
+🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥
+
+💨 Thơm đậm – Nặng đô – Phê lâu
+🚚 Ship toàn quốc
+🎁 Free ship từ 3 lạng
+
+📞 0868862907
+"""
+
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    payload = {
+        "message": content,
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+
+    requests.post(url, data=payload)
+
+# ================== SCHEDULER ==================
+scheduler = BackgroundScheduler()
+scheduler.add_job(remarketing, "interval", hours=2)
+scheduler.add_job(auto_post, "cron", hour=9)
+scheduler.start()
 
 # ================== RUN ==================
 if _name_ == "_main_":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
