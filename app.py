@@ -7,6 +7,9 @@ from openai import OpenAI
 import time
 
 app = Flask(__name__)
+@app.route("/")
+def home():
+    return "BOT THUỐC LÀO ĐANG HOẠT ĐỘNG 👑"
 
 # ================= CONFIG =================
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
@@ -159,3 +162,4 @@ def webhook():
 # ================= RUN =================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
