@@ -176,6 +176,15 @@ Chỉ trả JSON.
 def home():
     return "Bot Thuoc Lao is running 🚀"
 
+@app.route("/terms")
+def terms_page():
+    return """
+    <h1>Điều khoản dịch vụ</h1>
+    <p>Bot được sử dụng để tư vấn và chốt đơn thuốc lào.</p>
+    <p>Người dùng đồng ý cung cấp thông tin chính xác khi đặt hàng.</p>
+    <p>Chúng tôi không chịu trách nhiệm với thông tin sai lệch từ người dùng.</p>
+    """
+
 @app.route("/privacy")
 def privacy_page():
     return """
@@ -258,3 +267,4 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
