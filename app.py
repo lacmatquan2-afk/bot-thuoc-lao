@@ -144,11 +144,12 @@ def daily_report():
             revenue += o["price"]
 
     send_telegram(f"📊 BÁO CÁO HÔM NAY\nĐơn: {count}\nDoanh thu: {revenue}đ")
-    @app.route("/")
-def home():
-    return "Bot thuoc lao dang chay OK"
+    
 
 # ================= WEBHOOK =================
+@app.route("/")
+def home():
+    return "Bot thuoc lao dang chay OK"
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -186,4 +187,5 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
