@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
 load_dotenv()
-app = Flask(_name_)
+app = Flask(__name__)
 
 # ================= ENV =================
 
@@ -246,10 +246,11 @@ def data_deletion():
 
 # ================= RUN =================
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_post, "cron", hour=19, minute=30)
     scheduler.start()
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
