@@ -2,4 +2,4 @@ Flask
 requests
 apscheduler
 gunicorn
-openai==1.30.5
+openai
