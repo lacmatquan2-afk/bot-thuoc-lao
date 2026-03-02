@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
 load_dotenv()
-app = Flask(__name__)
+app = Flask(_name_)
 
 # ================= ENV =================
 
@@ -67,16 +67,16 @@ def send_message(uid, text):
         payload = {"recipient": {"id": uid}, "message": {"text": text}}
         params = {"access_token": PAGE_ACCESS_TOKEN}
         requests.post(url, params=params, json=payload, timeout=5)
-    except:
-        pass
+    except Exception as e:
+        print("Send message error:", e)
 
 def reply_comment(comment_id, message):
     try:
         url = f"{GRAPH_URL}/{comment_id}/comments"
         params = {"message": message, "access_token": PAGE_ACCESS_TOKEN}
         requests.post(url, params=params, timeout=5)
-    except:
-        pass
+    except Exception as e:
+        print("Reply comment error:", e)
 
 # ================= TELEGRAM =================
 
@@ -87,21 +87,23 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         requests.post(url, json=payload, timeout=5)
-    except:
-        pass
+    except Exception as e:
+        print("Telegram error:", e)
 
 # ================= AI ENGINE =================
 
 def ai_process(uid, user_text):
 
     history = user_data.get(uid, {}).get("history", [])
-
     history.append({"role": "user", "content": user_text})
+
+    # Giới hạn 6 tin gần nhất để tiết kiệm token
+    history = history[-6:]
 
     system_prompt = """
 Bạn là nhân viên bán hàng chuyên nghiệp.
 Mục tiêu: CHỐT ĐƠN.
-Luôn hướng khách đến đặt hàng.
+Nếu thiếu thông tin thì PHẢI hỏi tiếp cho đủ.
 
 Sản phẩm có:
 - Nhẹ 120k
@@ -129,7 +131,11 @@ Chỉ trả JSON, không thêm chữ.
         )
 
         content = completion.choices[0].message.content
-        result = json.loads(content)
+
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            return "Anh cho em xin lại thông tin rõ hơn ạ."
 
         history.append({"role":"assistant","content":result["reply"]})
 
@@ -139,7 +145,8 @@ Chỉ trả JSON, không thêm chữ.
 
         return result["reply"]
 
-    except:
+    except Exception as e:
+        print("AI error:", e)
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
 
 def merge_order(uid, new_data):
@@ -177,8 +184,6 @@ def webhook():
                 if "comment_id" in value:
                     comment_id = value["comment_id"]
                     message = value.get("message", "").lower()
-                    sender_id = value.get("from", {}).get("id")
-
                     if "giá" in message:
                         reply_comment(comment_id, "Em đã inbox anh 🔥")
 
@@ -218,22 +223,15 @@ def auto_post():
             "access_token": PAGE_ACCESS_TOKEN
         }
         requests.post(url, data=payload, timeout=10)
-    except:
-        pass
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(auto_post, "interval", days=1)
-scheduler.start()
+        print("Auto post success")
+    except Exception as e:
+        print("Auto post error:", e)
 
 # ================= POLICY =================
 
 @app.route("/privacy-policy")
 def privacy():
-    return """
-    <h2>Chính sách quyền riêng tư</h2>
-    <p>Dữ liệu chỉ dùng để xử lý đơn hàng.</p>
-    <p>Hệ thống tự xóa dữ liệu sau khi hoàn tất đơn.</p>
-    """
+    return "<h2>Chính sách quyền riêng tư</h2>"
 
 @app.route("/data-deletion", methods=["POST"])
 def data_deletion():
@@ -248,5 +246,10 @@ def data_deletion():
 
 # ================= RUN =================
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+if _name_ == "_main_":
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(auto_post, "cron", hour=19, minute=30)
+    scheduler.start()
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
