@@ -174,7 +174,19 @@ Chỉ trả JSON.
 
 @app.route("/")
 def home():
-    return "Bot Thuoc Lao is running 🚀"
+    return """
+    <html>
+    <head>
+        <meta name="facebook-domain-verification" content="<head>
+<meta name="facebook-domain-verification" content="MÃ_CỦA_BẠN" />
+</head>" />
+        <title>Bot Thuoc Lao</title>
+    </head>
+    <body>
+        <h1>Bot Thuoc Lao is running 🚀</h1>
+    </body>
+    </html>
+    """
 
 @app.route("/terms")
 def terms_page():
@@ -267,4 +279,5 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
