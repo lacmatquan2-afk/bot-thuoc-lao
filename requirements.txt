@@ -3,4 +3,3 @@ requests
 apscheduler
 gunicorn
 openai==1.30.5
-httpx==0.27.0
