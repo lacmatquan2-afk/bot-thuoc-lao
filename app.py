@@ -30,7 +30,7 @@ if not PAGE_ACCESS_TOKEN or not VERIFY_TOKEN or not APP_SECRET:
 client = OpenAI(api_key=OPENAI_API_KEY)
 GRAPH_URL = "https://graph.facebook.com/v19.0"
 
-# ================= MEMORY + LOCK =================
+# ================= MEMORY =================
 
 user_data = {}
 user_locks = {}
@@ -90,98 +90,69 @@ def send_telegram(message):
     except:
         pass
 
-# ================= AI =================
+# ================= AI ENGINE =================
 
-def ai_reply(text):
+def ai_process(uid, user_text):
+
+    history = user_data.get(uid, {}).get("history", [])
+
+    history.append({"role": "user", "content": user_text})
+
+    system_prompt = """
+Bạn là nhân viên bán hàng chuyên nghiệp.
+Mục tiêu: CHỐT ĐƠN.
+Luôn hướng khách đến đặt hàng.
+
+Sản phẩm có:
+- Nhẹ 120k
+- Vừa 150k
+- Nặng 180k
+
+Trả về JSON đúng format:
+{
+ "reply": "...",
+ "order_data": {
+    "price": null,
+    "qty": null,
+    "phone": null,
+    "address": null
+ }
+}
+Chỉ trả JSON, không thêm chữ.
+"""
+
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system",
-                 "content": "Bạn là nhân viên bán hàng chuyên nghiệp, luôn hướng khách về đặt hàng."},
-                {"role": "user", "content": text}
-            ],
-            timeout=10
+            messages=[{"role":"system","content":system_prompt}] + history,
+            temperature=0.7
         )
-        return completion.choices[0].message.content
+
+        content = completion.choices[0].message.content
+        result = json.loads(content)
+
+        history.append({"role":"assistant","content":result["reply"]})
+
+        user_data[uid] = user_data.get(uid, {})
+        user_data[uid]["history"] = history
+        user_data[uid]["order"] = merge_order(uid, result.get("order_data", {}))
+
+        return result["reply"]
+
     except:
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
 
-# ================= FLOW BÁN =================
+def merge_order(uid, new_data):
+    old = user_data.get(uid, {}).get("order", {})
+    merged = old.copy()
+    for k,v in new_data.items():
+        if v:
+            merged[k] = v
+    return merged
 
-def handle_sale(uid, text):
-    lock = get_user_lock(uid)
-    with lock:
-
-        if uid not in user_data:
-            user_data[uid] = {"step": "choose"}
-
-        step = user_data[uid]["step"]
-
-        if step == "choose":
-            send_message(uid,
-                "Bên em có:\n"
-                "1️⃣ Nhẹ – 120k\n"
-                "2️⃣ Vừa – 150k\n"
-                "3️⃣ Nặng – 180k\n\n"
-                "Anh dùng mức nào ạ?"
-            )
-            user_data[uid]["step"] = "confirm"
-            return
-
-        if step == "confirm":
-            if "120" in text:
-                price = 120000
-            elif "150" in text:
-                price = 150000
-            elif "180" in text:
-                price = 180000
-            else:
-                send_message(uid, "Anh chọn 120k, 150k hoặc 180k giúp em ạ.")
-                return
-
-            user_data[uid]["price"] = price
-            user_data[uid]["step"] = "quantity"
-            send_message(uid, "Anh lấy 1 hay 2 gói để em hỗ trợ phí ship tốt hơn?")
-            return
-
-        if step == "quantity":
-            qty = 2 if "2" in text else 1
-            user_data[uid]["qty"] = qty
-            user_data[uid]["step"] = "phone"
-            send_message(uid, "Anh cho em xin số điện thoại nhận hàng ạ?")
-            return
-
-        if step == "phone":
-            user_data[uid]["phone"] = text
-            user_data[uid]["step"] = "address"
-            send_message(uid, "Anh gửi giúp em địa chỉ nhận hàng ạ?")
-            return
-
-        if step == "address":
-            user_data[uid]["address"] = text
-
-            price = user_data[uid]["price"]
-            qty = user_data[uid]["qty"]
-            total = price * qty
-
-            send_message(uid,
-                f"Xác nhận đơn:\n"
-                f"Số lượng: {qty}\n"
-                f"Tổng tiền: {total}đ\n"
-                f"Thanh toán khi nhận hàng (COD)"
-            )
-
-            send_telegram(
-                f"🔥 ĐƠN MỚI 🔥\n"
-                f"SĐT: {user_data[uid]['phone']}\n"
-                f"Địa chỉ: {text}\n"
-                f"Tổng: {total}đ"
-            )
-
-            # TỰ ĐỘNG XÓA DỮ LIỆU SAU KHI CHỐT
-            user_data.pop(uid, None)
-            return
+def check_complete_order(uid):
+    order = user_data.get(uid, {}).get("order", {})
+    return all(order.get(x) for x in ["price","qty","phone","address"])
 
 # ================= WEBHOOK =================
 
@@ -196,15 +167,11 @@ def webhook():
     if not verify_signature(request):
         return "Invalid signature", 403
 
-    try:
-        data = request.get_json()
-    except:
-        return "Bad JSON", 400
+    data = request.get_json()
 
     if data.get("object") == "page":
         for entry in data.get("entry", []):
 
-            # COMMENT
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 if "comment_id" in value:
@@ -213,22 +180,29 @@ def webhook():
                     sender_id = value.get("from", {}).get("id")
 
                     if "giá" in message:
-                        reply_comment(comment_id, "Em đã inbox anh ạ 🔥")
-                        if sender_id:
-                            handle_sale(sender_id, "mua")
+                        reply_comment(comment_id, "Em đã inbox anh 🔥")
 
-            # INBOX
             for messaging in entry.get("messaging", []):
                 sender_id = messaging["sender"]["id"]
+
                 if "message" in messaging:
-                    text = messaging["message"].get("text", "").lower()
+                    text = messaging["message"].get("text","")
 
-                    if any(x in text for x in ["mua", "giá"]):
-                        handle_sale(sender_id, text)
-                        return "ok"
-
-                    reply = ai_reply(text)
+                    reply = ai_process(sender_id, text)
                     send_message(sender_id, reply)
+
+                    if check_complete_order(sender_id):
+                        order = user_data[sender_id]["order"]
+                        total = order["price"] * order["qty"]
+
+                        send_telegram(
+                            f"🔥 ĐƠN MỚI 🔥\n"
+                            f"SĐT: {order['phone']}\n"
+                            f"Địa chỉ: {order['address']}\n"
+                            f"Tổng: {total}đ"
+                        )
+
+                        user_data.pop(sender_id, None)
 
     return "ok"
 
@@ -251,14 +225,14 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(auto_post, "interval", days=1)
 scheduler.start()
 
-# ================= CHÍNH SÁCH & DATA DELETE =================
+# ================= POLICY =================
 
 @app.route("/privacy-policy")
 def privacy():
     return """
     <h2>Chính sách quyền riêng tư</h2>
-    <p>Chúng tôi chỉ lưu dữ liệu khách hàng phục vụ xử lý đơn hàng.</p>
-    <p>Dữ liệu được xóa ngay sau khi hoàn tất đơn.</p>
+    <p>Dữ liệu chỉ dùng để xử lý đơn hàng.</p>
+    <p>Hệ thống tự xóa dữ liệu sau khi hoàn tất đơn.</p>
     """
 
 @app.route("/data-deletion", methods=["POST"])
