@@ -152,29 +152,34 @@ def daily_report():
 @app.route("/")
 def home():
     return "Bot thuoc lao dang chay OK"
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    data = request.json
+    if request.method == "GET":
+        verify_token = "thuoclao"   # token bạn đã nhập trong Facebook
+        token_sent = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
 
-    for entry in data.get("entry", []):
-        for event in entry.get("messaging", []):
+        if token_sent == verify_token:
+            return challenge
+        return "Verify token sai"
 
-            sender_id = event["sender"]["id"]
-            if sender_id == PAGE_ID:
-                continue
+    if request.method == "POST":
+        data = request.json
 
-            text = event["message"].get("text", "").lower()
+        for entry in data.get("entry", []):
+            for event in entry.get("messaging", []):
+                sender_id = event["sender"]["id"]
 
-            if not text:
-                send_quick_reply(sender_id)
-                return "ok"
+                text = event.get("message", {}).get("text", "").lower()
 
-            if text == "/report":
-                daily_report()
-                return "ok"
+                if not text:
+                    return "ok"
 
-            if handle_sale_flow(sender_id, text):
-                return "ok"
+                if text == "/report":
+                    daily_report()
+                    return "ok"
+
+                handle_sale_flow(sender_id, text)
 
             send_quick_reply(sender_id)
 
@@ -189,6 +194,7 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
