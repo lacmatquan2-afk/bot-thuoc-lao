@@ -178,6 +178,19 @@ Chỉ trả JSON.
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
 
 # ================= WEBHOOK =================
+@app.route("/privacy")
+def privacy():
+    return """
+    <h1>Privacy Policy</h1>
+    <p>Chúng tôi không lưu trữ hoặc chia sẻ dữ liệu người dùng.</p>
+    <p>Dữ liệu chỉ được sử dụng để trả lời tin nhắn tự động.</p>
+    """
+@app.route("/delete-data")
+def delete_data():
+    return """
+    <h1>Yêu cầu xóa dữ liệu</h1>
+    <p>Nếu bạn muốn xóa dữ liệu, vui lòng liên hệ email: lacmatquanz@gmail.com</p>
+    """
 
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -286,3 +299,4 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
