@@ -143,8 +143,8 @@ def daily_report():
             count += 1
             revenue += o["price"]
 
-    send_telegram(f"📊 BÁO CÁO HÔM NAY\n
-        f"Đơn: {count}\n
+    send_telegram(f"📊 BÁO CÁO HÔM NAY\n"
+        f"Đơn: {count}\n"
         f"Doanh thu: {revenue}đ"
         )
     
@@ -190,6 +190,7 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
