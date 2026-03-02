@@ -1,24 +1,17 @@
 import os
 import re
+import json
+import time
+import random
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request
 from openai import OpenAI
-import time
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
-@app.route("/")
-def home():
-    return """
-<h2>Privacy Policy</h2>
-<p>Bot Thuoc Lao Quang Dinh does not collect, store or share personal data.</p>
-<p>We only use Messenger data to reply to customer messages.</p>
-<p>Contact: lacmatquan2@gmail.com</p>
-"""
 
-# ================= CONFIG =================
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 PAGE_ID = os.getenv("PAGE_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -26,13 +19,42 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+CUSTOMER_FILE = "customers.json"
+ORDER_FILE = "orders.json"
+
 user_data = {}
 last_message_time = {}
 
-# ================= HELPER =================
+# ================= FILE =================
+def load_data(file):
+    if not os.path.exists(file):
+        return {}
+    with open(file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_data(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ================= FACEBOOK =================
 def send_message(psid, text):
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     payload = {"recipient": {"id": psid}, "message": {"text": text}}
+    requests.post(url, json=payload)
+
+def send_quick_reply(psid):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": psid},
+        "message": {
+            "text": "Chọn chức năng:",
+            "quick_replies": [
+                {"content_type": "text", "title": "🔥 Xem giá", "payload": "PRICE"},
+                {"content_type": "text", "title": "📦 Đặt hàng", "payload": "ORDER"},
+                {"content_type": "text", "title": "📞 Tư vấn", "payload": "HELP"}
+            ]
+        }
+    }
     requests.post(url, json=payload)
 
 def send_telegram(text):
@@ -41,131 +63,123 @@ def send_telegram(text):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         requests.post(url, data=payload)
 
-def is_phone(text):
-    return re.fullmatch(r"0\d{9}", text)
-
-# ================= AI CHỈ HỖ TRỢ NGOÀI LUỒNG =================
-def ai_reply(user_text):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content":
-                 "Bạn là trợ lý phụ. Chỉ trả lời các câu hỏi ngoài luồng "
-                 "như cách hút, bảo quản, nguồn gốc. "
-                 "Không tự chốt đơn. Trả lời ngắn gọn."},
-                {"role": "user", "content": user_text}
-            ]
-        )
-        return response.choices[0].message.content
-    except:
-        return "Anh cần tư vấn thêm gì không ạ?"
-
-# ================= FLOW CHỐT ĐƠN =================
+# ================= SALE FLOW =================
 def handle_sale_flow(sender_id, text):
 
-    if sender_id not in user_data:
-        user_data[sender_id] = {"step": "start"}
-
-    step = user_data[sender_id].get("step")
-
-    # ===== BƯỚC 1: GIỚI THIỆU =====
-    if step == "start":
+    if text == "price":
         send_message(sender_id,
-            "🔥 Thuốc Lào Quảng Định chính gốc 🔥\n\n"
-            "✔ Loại 1: 100k\n"
-            "✔ Loại ĐẶC BIỆT: 150k (đậm hơn, hút đã hơn)\n\n"
-            "Anh lấy loại 100k hay 150k ạ?"
+            "🔥 Bảng giá:\n"
+            "✔ Loại 100k\n"
+            "✔ Loại đặc biệt 150k\n\n"
+            "Chọn loại để đặt hàng."
         )
-        user_data[sender_id]["step"] = "choose_product"
         return True
 
-    # ===== BƯỚC 2: CHỌN SẢN PHẨM =====
-    if step == "choose_product":
-        if "150" in text:
-            user_data[sender_id]["product"] = "Loại đặc biệt 150k"
-        else:
-            user_data[sender_id]["product"] = "Loại 1 - 100k"
-
-        send_message(sender_id, "Anh gửi giúp em SĐT nhận hàng:")
-        user_data[sender_id]["step"] = "phone"
+    if text == "order":
+        user_data[sender_id] = {"step": "product"}
+        send_message(sender_id, "Anh chọn 100k hay 150k?")
         return True
 
-    # ===== BƯỚC 3: NHẬP SĐT =====
-    if step == "phone":
-        if is_phone(text):
-            user_data[sender_id]["phone"] = text
-            send_message(sender_id, "Anh gửi giúp em ĐỊA CHỈ nhận hàng:")
-            user_data[sender_id]["step"] = "address"
-        else:
-            send_message(sender_id, "SĐT chưa đúng định dạng. Vui lòng nhập lại.")
-        return True
+    if sender_id in user_data:
 
-    # ===== BƯỚC 4: NHẬP ĐỊA CHỈ =====
-    if step == "address":
-        user_data[sender_id]["address"] = text
+        step = user_data[sender_id]["step"]
 
-        order = (
-            f"📦 ĐƠN HÀNG MỚI\n"
-            f"Sản phẩm: {user_data[sender_id]['product']}\n"
-            f"SĐT: {user_data[sender_id]['phone']}\n"
-            f"Địa chỉ: {text}\n"
-            f"Thời gian: {datetime.now()}"
-        )
+        if step == "product":
+            if "150" in text:
+                user_data[sender_id]["product"] = "150k"
+                user_data[sender_id]["price"] = 150000
+            else:
+                user_data[sender_id]["product"] = "100k"
+                user_data[sender_id]["price"] = 100000
 
-        send_telegram(order)
-        send_message(sender_id, "✅ Đã chốt đơn thành công. Shop sẽ gọi xác nhận ngay!")
+            send_message(sender_id, "Anh gửi SĐT:")
+            user_data[sender_id]["step"] = "phone"
+            return True
 
-        user_data[sender_id] = {}
-        return True
+        if step == "phone":
+            if re.fullmatch(r"0\d{9}", text):
+                user_data[sender_id]["phone"] = text
+                send_message(sender_id, "Anh gửi địa chỉ:")
+                user_data[sender_id]["step"] = "address"
+            else:
+                send_message(sender_id, "SĐT chưa đúng.")
+            return True
+
+        if step == "address":
+
+            orders = load_data(ORDER_FILE)
+            order_id = str(len(orders)+1)
+
+            order = {
+                "product": user_data[sender_id]["product"],
+                "price": user_data[sender_id]["price"],
+                "phone": user_data[sender_id]["phone"],
+                "address": text,
+                "time": str(datetime.now())
+            }
+
+            orders[order_id] = order
+            save_data(ORDER_FILE, orders)
+
+            send_telegram(f"ĐƠN MỚI:\n{order}")
+            send_message(sender_id, "✅ Đã chốt đơn!")
+
+            user_data.pop(sender_id)
+            return True
 
     return False
+
+# ================= REPORT =================
+def daily_report():
+    orders = load_data(ORDER_FILE)
+    today = datetime.now().date()
+
+    count = 0
+    revenue = 0
+
+    for o in orders.values():
+        t = datetime.fromisoformat(o["time"]).date()
+        if t == today:
+            count += 1
+            revenue += o["price"]
+
+    send_telegram(f"📊 BÁO CÁO HÔM NAY\nĐơn: {count}\nDoanh thu: {revenue}đ")
 
 # ================= WEBHOOK =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
 
-    if data.get("object") != "page":
-        return "ok"
-
     for entry in data.get("entry", []):
         for event in entry.get("messaging", []):
-            sender_id = event["sender"]["id"]
 
+            sender_id = event["sender"]["id"]
             if sender_id == PAGE_ID:
                 continue
 
-            if "message" in event:
-                text = event["message"].get("text", "").strip().lower()
+            text = event["message"].get("text", "").lower()
 
-                # ===== CHỐNG SPAM (3s) =====
-                now = time.time()
-                if sender_id in last_message_time:
-                    if now - last_message_time[sender_id] < 3:
-                        return "ok"
-                last_message_time[sender_id] = now
+            if not text:
+                send_quick_reply(sender_id)
+                return "ok"
 
-                # ===== KEYWORD KÍCH HOẠT FLOW =====
-                if any(k in text for k in ["mua", "giá", "thuốc", "ship"]):
-                    handled = handle_sale_flow(sender_id, text)
-                    if handled:
-                        continue
+            if text == "/report":
+                daily_report()
+                return "ok"
 
-                # ===== NẾU ĐANG TRONG FLOW =====
-                if sender_id in user_data:
-                    handled = handle_sale_flow(sender_id, text)
-                    if handled:
-                        continue
+            if handle_sale_flow(sender_id, text):
+                return "ok"
 
-                # ===== NGOÀI LUỒNG → AI =====
-                reply = ai_reply(text)
-                send_message(sender_id, reply)
+            send_quick_reply(sender_id)
 
     return "ok"
+
+# ================= SCHEDULER =================
+scheduler = BackgroundScheduler()
+scheduler.add_job(daily_report, 'cron', hour=21, minute=0)
+scheduler.start()
 
 # ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
