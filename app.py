@@ -162,7 +162,7 @@ def home():
 @app.route("/delete-data", methods=["GET"])
 def delete_data():
     return "Chúng tôi không lưu trữ dữ liệu người dùng."
-    @app.route("/terms")
+@app.route("/terms")
 def terms():
     return """
     <h2>Điều khoản dịch vụ</h2>
@@ -212,3 +212,4 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
