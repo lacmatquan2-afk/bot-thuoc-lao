@@ -143,7 +143,10 @@ def daily_report():
             count += 1
             revenue += o["price"]
 
-    send_telegram(f"📊 BÁO CÁO HÔM NAY\nĐơn: {count}\nDoanh thu: {revenue}đ")
+    send_telegram(f"📊 BÁO CÁO HÔM NAY\n
+        f"Đơn: {count}\n
+        f"Doanh thu: {revenue}đ"
+        )
     
 
 # ================= WEBHOOK =================
@@ -187,5 +190,6 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
