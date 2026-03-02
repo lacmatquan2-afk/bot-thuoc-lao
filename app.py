@@ -152,11 +152,23 @@ def daily_report():
 
 @app.route("/")
 def home():
-    return "Bot thuoc lao dang chay OK"
+    return """
+    <h2>Chính sách quyền riêng tư</h2>
+    <p>Ứng dụng không thu thập, lưu trữ hoặc chia sẻ dữ liệu cá nhân người dùng.</p>
+    <p>Mọi thông tin chỉ dùng để trả lời tin nhắn tự động.</p>
+    <p>Liên hệ: lacmatquan2@gmail.com</p>
+    """
     
 @app.route("/delete-data", methods=["GET"])
 def delete_data():
     return "Chúng tôi không lưu trữ dữ liệu người dùng."
+    @app.route("/terms")
+def terms():
+    return """
+    <h2>Điều khoản dịch vụ</h2>
+    <p>Ứng dụng cung cấp thông tin sản phẩm thuốc lào Quảng Định.</p>
+    <p>Không chịu trách nhiệm cho việc sử dụng sai mục đích.</p>
+    """
     
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
@@ -200,12 +212,3 @@ scheduler.start()
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
