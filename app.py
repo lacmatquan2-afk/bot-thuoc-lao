@@ -9,7 +9,12 @@ import time
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "BOT THUỐC LÀO ĐANG HOẠT ĐỘNG 👑"
+    return """
+<h2>Privacy Policy</h2>
+<p>Bot Thuoc Lao Quang Dinh does not collect, store or share personal data.</p>
+<p>We only use Messenger data to reply to customer messages.</p>
+<p>Contact: lacmatquan2@gmail.com</p>
+"""
 
 # ================= CONFIG =================
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
@@ -163,3 +168,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
