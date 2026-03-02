@@ -178,6 +178,10 @@ Chỉ trả JSON.
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
 
 # ================= WEBHOOK =================
+@app.route("/")
+def home():
+    return "Bot Thuoc Lao is running 🚀"
+
 @app.route("/privacy")
 def privacy():
     return """
@@ -299,4 +303,5 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
