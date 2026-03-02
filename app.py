@@ -13,9 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
 load_dotenv()
-
 app = Flask(__name__)
-
 logging.basicConfig(level=logging.INFO)
 
 # ================= ENV =================
@@ -129,12 +127,12 @@ Bạn là nhân viên bán hàng chuyên nghiệp.
 Mục tiêu: CHỐT ĐƠN.
 Nếu thiếu thông tin thì PHẢI hỏi tiếp cho đủ.
 
-Sản phẩm có:
+Sản phẩm:
 - Nhẹ 120k
 - Vừa 150k
 - Nặng 180k
 
-Trả về JSON đúng format:
+Trả về JSON:
 {
  "reply": "...",
  "order_data": {
@@ -155,12 +153,7 @@ Chỉ trả JSON.
         )
 
         content = completion.choices[0].message.content.strip()
-
-        try:
-            result = json.loads(content)
-        except:
-            logging.warning("AI returned invalid JSON")
-            return "Anh cho em xin lại thông tin rõ hơn ạ."
+        result = json.loads(content)
 
         reply = result.get("reply","Anh cần hỗ trợ gì thêm ạ?")
         order_data = result.get("order_data", {})
@@ -177,24 +170,40 @@ Chỉ trả JSON.
         logging.error(f"AI error: {e}")
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
 
-# ================= WEBHOOK =================
+# ================= ROUTES =================
+
 @app.route("/")
 def home():
     return "Bot Thuoc Lao is running 🚀"
 
 @app.route("/privacy")
-def privacy():
+def privacy_page():
     return """
     <h1>Privacy Policy</h1>
-    <p>Chúng tôi không lưu trữ hoặc chia sẻ dữ liệu người dùng.</p>
-    <p>Dữ liệu chỉ được sử dụng để trả lời tin nhắn tự động.</p>
+    <p>Chúng tôi thu thập số điện thoại và địa chỉ để xử lý đơn hàng.</p>
+    <p>Dữ liệu chỉ dùng cho mục đích giao hàng.</p>
+    <p>Không chia sẻ cho bên thứ ba.</p>
+    <p>Dữ liệu được xóa sau khi hoàn tất đơn.</p>
     """
+
 @app.route("/delete-data")
-def delete_data():
+def delete_data_page():
     return """
     <h1>Yêu cầu xóa dữ liệu</h1>
-    <p>Nếu bạn muốn xóa dữ liệu, vui lòng liên hệ email: lacmatquanz@gmail.com</p>
+    <p>Vui lòng gửi email tới: lacmatquanz@gmail.com</p>
     """
+
+@app.route("/data-deletion", methods=["POST"])
+def data_deletion():
+    data = request.get_json(silent=True)
+    uid = data.get("user_id") if data else None
+    if uid:
+        user_data.pop(uid, None)
+
+    return jsonify({
+        "url": "https://bot-thuoc-lao.onrender.com/delete-data",
+        "confirmation_code": str(int(time.time()))
+    })
 
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -213,14 +222,6 @@ def webhook():
 
     if data.get("object") == "page":
         for entry in data.get("entry", []):
-
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-                if "comment_id" in value:
-                    comment_id = value["comment_id"]
-                    message = value.get("message", "").lower()
-                    if "giá" in message:
-                        reply_comment(comment_id, "Em đã inbox anh 🔥")
 
             for messaging in entry.get("messaging", []):
                 sender_id = messaging["sender"]["id"]
@@ -248,60 +249,12 @@ def webhook():
 
     return "ok"
 
-# ================= AUTO POST =================
-
-def auto_post():
-    try:
-        if not POST_IMAGE_URL:
-            return
-        message = "Thuốc lào chuẩn vị 🔥 Inbox để được tư vấn ngay!"
-        url = f"{GRAPH_URL}/{PAGE_ID}/photos"
-        payload = {
-            "url": POST_IMAGE_URL,
-            "caption": message,
-            "access_token": PAGE_ACCESS_TOKEN
-        }
-        requests.post(url, data=payload, timeout=10)
-        logging.info("Auto post success")
-    except Exception as e:
-        logging.error(f"Auto post error: {e}")
-
-# ================= POLICY =================
-
-@app.route("/privacy-policy")
-def privacy():
-    return """
-    <h2>Chính sách quyền riêng tư</h2>
-    <p>Chúng tôi thu thập số điện thoại và địa chỉ để xử lý đơn hàng.</p>
-    <p>Dữ liệu chỉ dùng cho mục đích giao hàng.</p>
-    <p>Không chia sẻ cho bên thứ ba.</p>
-    <p>Dữ liệu được xóa sau khi hoàn tất đơn.</p>
-    <p>Yêu cầu xóa dữ liệu qua endpoint /data-deletion.</p>
-    """
-
-@app.route("/data-deletion", methods=["POST"])
-def data_deletion():
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({"error":"Invalid request"}), 400
-
-    uid = data.get("user_id")
-    if uid:
-        user_data.pop(uid, None)
-
-    return jsonify({
-        "url": "https://yourdomain.com/data-deletion-status",
-        "confirmation_code": str(int(time.time()))
-    })
-
 # ================= RUN =================
 
 if __name__ == "__main__":
     scheduler = BackgroundScheduler()
-    scheduler.add_job(auto_post, "cron", hour=19, minute=30)
+    scheduler.add_job(lambda: None)
     scheduler.start()
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
