@@ -5,13 +5,18 @@ import hashlib
 import threading
 import requests
 import time
+import re
+import logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
 load_dotenv()
+
 app = Flask(__name__)
+
+logging.basicConfig(level=logging.INFO)
 
 # ================= ENV =================
 
@@ -68,7 +73,7 @@ def send_message(uid, text):
         params = {"access_token": PAGE_ACCESS_TOKEN}
         requests.post(url, params=params, json=payload, timeout=5)
     except Exception as e:
-        print("Send message error:", e)
+        logging.error(f"Send message error: {e}")
 
 def reply_comment(comment_id, message):
     try:
@@ -76,7 +81,7 @@ def reply_comment(comment_id, message):
         params = {"message": message, "access_token": PAGE_ACCESS_TOKEN}
         requests.post(url, params=params, timeout=5)
     except Exception as e:
-        print("Reply comment error:", e)
+        logging.error(f"Reply comment error: {e}")
 
 # ================= TELEGRAM =================
 
@@ -88,16 +93,35 @@ def send_telegram(message):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print("Telegram error:", e)
+        logging.error(f"Telegram error: {e}")
+
+# ================= VALIDATION =================
+
+def is_valid_phone(phone):
+    pattern = r"^(0|\+84)[0-9]{8,10}$"
+    return re.match(pattern, phone)
 
 # ================= AI ENGINE =================
 
-def ai_process(uid, user_text):
+def merge_order(uid, new_data):
+    old = user_data.get(uid, {}).get("order", {})
+    merged = old.copy()
+    for k, v in new_data.items():
+        if v:
+            merged[k] = v
+    return merged
 
+def check_complete_order(uid):
+    order = user_data.get(uid, {}).get("order", {})
+    if not all(order.get(x) for x in ["price","qty","phone","address"]):
+        return False
+    if not is_valid_phone(order["phone"]):
+        return False
+    return True
+
+def ai_process(uid, user_text):
     history = user_data.get(uid, {}).get("history", [])
     history.append({"role": "user", "content": user_text})
-
-    # Giới hạn 6 tin gần nhất để tiết kiệm token
     history = history[-6:]
 
     system_prompt = """
@@ -120,7 +144,7 @@ Trả về JSON đúng format:
     "address": null
  }
 }
-Chỉ trả JSON, không thêm chữ.
+Chỉ trả JSON.
 """
 
     try:
@@ -130,36 +154,28 @@ Chỉ trả JSON, không thêm chữ.
             temperature=0.7
         )
 
-        content = completion.choices[0].message.content
+        content = completion.choices[0].message.content.strip()
 
         try:
             result = json.loads(content)
-        except json.JSONDecodeError:
+        except:
+            logging.warning("AI returned invalid JSON")
             return "Anh cho em xin lại thông tin rõ hơn ạ."
 
-        history.append({"role":"assistant","content":result["reply"]})
+        reply = result.get("reply","Anh cần hỗ trợ gì thêm ạ?")
+        order_data = result.get("order_data", {})
+
+        history.append({"role":"assistant","content":reply})
 
         user_data[uid] = user_data.get(uid, {})
         user_data[uid]["history"] = history
-        user_data[uid]["order"] = merge_order(uid, result.get("order_data", {}))
+        user_data[uid]["order"] = merge_order(uid, order_data)
 
-        return result["reply"]
+        return reply
 
     except Exception as e:
-        print("AI error:", e)
+        logging.error(f"AI error: {e}")
         return "Anh cần em hỗ trợ thêm gì để chốt đơn ạ?"
-
-def merge_order(uid, new_data):
-    old = user_data.get(uid, {}).get("order", {})
-    merged = old.copy()
-    for k,v in new_data.items():
-        if v:
-            merged[k] = v
-    return merged
-
-def check_complete_order(uid):
-    order = user_data.get(uid, {}).get("order", {})
-    return all(order.get(x) for x in ["price","qty","phone","address"])
 
 # ================= WEBHOOK =================
 
@@ -174,7 +190,9 @@ def webhook():
     if not verify_signature(request):
         return "Invalid signature", 403
 
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not data:
+        return "Bad request", 400
 
     if data.get("object") == "page":
         for entry in data.get("entry", []):
@@ -193,21 +211,23 @@ def webhook():
                 if "message" in messaging:
                     text = messaging["message"].get("text","")
 
-                    reply = ai_process(sender_id, text)
-                    send_message(sender_id, reply)
+                    lock = get_user_lock(sender_id)
+                    with lock:
+                        reply = ai_process(sender_id, text)
+                        send_message(sender_id, reply)
 
-                    if check_complete_order(sender_id):
-                        order = user_data[sender_id]["order"]
-                        total = order["price"] * order["qty"]
+                        if check_complete_order(sender_id):
+                            order = user_data[sender_id]["order"]
+                            total = order["price"] * order["qty"]
 
-                        send_telegram(
-                            f"🔥 ĐƠN MỚI 🔥\n"
-                            f"SĐT: {order['phone']}\n"
-                            f"Địa chỉ: {order['address']}\n"
-                            f"Tổng: {total}đ"
-                        )
+                            send_telegram(
+                                f"🔥 ĐƠN MỚI 🔥\n"
+                                f"SĐT: {order['phone']}\n"
+                                f"Địa chỉ: {order['address']}\n"
+                                f"Tổng: {total}đ"
+                            )
 
-                        user_data.pop(sender_id, None)
+                            user_data.pop(sender_id, None)
 
     return "ok"
 
@@ -215,6 +235,8 @@ def webhook():
 
 def auto_post():
     try:
+        if not POST_IMAGE_URL:
+            return
         message = "Thuốc lào chuẩn vị 🔥 Inbox để được tư vấn ngay!"
         url = f"{GRAPH_URL}/{PAGE_ID}/photos"
         payload = {
@@ -223,21 +245,32 @@ def auto_post():
             "access_token": PAGE_ACCESS_TOKEN
         }
         requests.post(url, data=payload, timeout=10)
-        print("Auto post success")
+        logging.info("Auto post success")
     except Exception as e:
-        print("Auto post error:", e)
+        logging.error(f"Auto post error: {e}")
 
 # ================= POLICY =================
 
 @app.route("/privacy-policy")
 def privacy():
-    return "<h2>Chính sách quyền riêng tư</h2>"
+    return """
+    <h2>Chính sách quyền riêng tư</h2>
+    <p>Chúng tôi thu thập số điện thoại và địa chỉ để xử lý đơn hàng.</p>
+    <p>Dữ liệu chỉ dùng cho mục đích giao hàng.</p>
+    <p>Không chia sẻ cho bên thứ ba.</p>
+    <p>Dữ liệu được xóa sau khi hoàn tất đơn.</p>
+    <p>Yêu cầu xóa dữ liệu qua endpoint /data-deletion.</p>
+    """
 
 @app.route("/data-deletion", methods=["POST"])
 def data_deletion():
-    data = request.get_json()
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error":"Invalid request"}), 400
+
     uid = data.get("user_id")
-    user_data.pop(uid, None)
+    if uid:
+        user_data.pop(uid, None)
 
     return jsonify({
         "url": "https://yourdomain.com/data-deletion-status",
@@ -253,4 +286,3 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
