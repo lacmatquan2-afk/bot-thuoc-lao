@@ -4,8 +4,8 @@ import json
 import time
 import random
 import requests
-from datetime import datetime, timedelta
-from flask import Flask, request
+from datetime import datetime
+from flask import Flask, request, jsonify
 from openai import OpenAI
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -23,7 +23,6 @@ CUSTOMER_FILE = "customers.json"
 ORDER_FILE = "orders.json"
 
 user_data = {}
-last_message_time = {}
 
 # ================= FILE =================
 def load_data(file):
@@ -38,23 +37,9 @@ def save_data(file, data):
 
 # ================= FACEBOOK =================
 def send_message(psid, text):
+    time.sleep(1)
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     payload = {"recipient": {"id": psid}, "message": {"text": text}}
-    requests.post(url, json=payload)
-
-def send_quick_reply(psid):
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {
-        "recipient": {"id": psid},
-        "message": {
-            "text": "Chọn chức năng:",
-            "quick_replies": [
-                {"content_type": "text", "title": "🔥 Xem giá", "payload": "PRICE"},
-                {"content_type": "text", "title": "📦 Đặt hàng", "payload": "ORDER"},
-                {"content_type": "text", "title": "📞 Tư vấn", "payload": "HELP"}
-            ]
-        }
-    }
     requests.post(url, json=payload)
 
 def send_telegram(text):
@@ -63,21 +48,70 @@ def send_telegram(text):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         requests.post(url, data=payload)
 
+# ================= AUTO POST =================
+POST_CONTENT = [
+    "🔥 Thuốc lào Quảng Xương thơm nặng – Ship COD toàn quốc!",
+    "Hàng mới về khói đậm phê mạnh 💨",
+    "Anh em cần thuốc lào chuẩn vị inbox ngay!"
+]
+
+SEED_COMMENTS = [
+    "Ai cần inbox em nhé 🔥",
+    "Hàng đang sẵn kho",
+    "Có ship COD toàn quốc"
+]
+
+def post_daily_content():
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    content = random.choice(POST_CONTENT)
+
+    payload = {
+        "message": content,
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+
+    res = requests.post(url, data=payload)
+    result = res.json()
+
+    if "id" in result:
+        post_id = result["id"]
+
+        for _ in range(random.randint(1, 2)):
+            comment = random.choice(SEED_COMMENTS)
+            requests.post(
+                f"https://graph.facebook.com/v18.0/{post_id}/comments",
+                data={
+                    "message": comment,
+                    "access_token": PAGE_ACCESS_TOKEN
+                }
+            )
+            time.sleep(2)
+
+# ================= AI =================
+def ai_reply(question):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Bạn là nhân viên bán thuốc lào, trả lời ngắn gọn, tập trung bán hàng."},
+                {"role": "user", "content": question}
+            ]
+        )
+        return response.choices[0].message.content
+    except:
+        return "Anh inbox để em tư vấn kỹ hơn nhé."
+
 # ================= SALE FLOW =================
 def handle_sale_flow(sender_id, text):
 
-    if text == "price":
+    if text in ["giá", "bao nhiêu", "price"]:
         send_message(sender_id,
             "🔥 Bảng giá:\n"
-            "✔ Loại 100k\n"
-            "✔ Loại đặc biệt 150k\n\n"
-            "Chọn loại để đặt hàng."
+            "✔ Loại thường: 100k\n"
+            "✔ Loại đặc biệt: 150k\n\n"
+            "Anh muốn đặt loại nào?"
         )
-        return True
-
-    if text == "order":
         user_data[sender_id] = {"step": "product"}
-        send_message(sender_id, "Anh chọn 100k hay 150k?")
         return True
 
     if sender_id in user_data:
@@ -122,7 +156,7 @@ def handle_sale_flow(sender_id, text):
             save_data(ORDER_FILE, orders)
 
             send_telegram(f"ĐƠN MỚI:\n{order}")
-            send_message(sender_id, "✅ Đã chốt đơn!")
+            send_message(sender_id, "✅ Đã chốt đơn! Hàng sẽ giao sớm.")
 
             user_data.pop(sender_id)
             return True
@@ -143,38 +177,38 @@ def daily_report():
             count += 1
             revenue += o["price"]
 
-    send_telegram(f"📊 BÁO CÁO HÔM NAY\n"
-        f"Đơn: {count}\n"
-        f"Doanh thu: {revenue}đ"
-        )
-    
-# ================= WEBHOOK =================
+    send_telegram(f"📊 BÁO CÁO HÔM NAY\nĐơn: {count}\nDoanh thu: {revenue}đ")
 
+# ================= LEGAL PAGES =================
 @app.route("/")
 def home():
     return """
     <h2>Chính sách quyền riêng tư</h2>
-    <p>Ứng dụng không thu thập, lưu trữ hoặc chia sẻ dữ liệu cá nhân người dùng.</p>
-    <p>Mọi thông tin chỉ dùng để trả lời tin nhắn tự động.</p>
-    <p>Liên hệ: lacmatquan2@gmail.com</p>
+    <p>Ứng dụng không chia sẻ dữ liệu người dùng cho bên thứ ba.</p>
+    <p>Dữ liệu chỉ dùng để xử lý đơn hàng và trả lời tin nhắn tự động.</p>
+    <p>Người dùng có thể yêu cầu xóa dữ liệu tại /delete-data</p>
     """
-    
-@app.route("/delete-data", methods=["GET"])
-def delete_data():
-    return "Chúng tôi không lưu trữ dữ liệu người dùng."
-    
+
 @app.route("/terms")
 def terms():
     return """
     <h2>Điều khoản dịch vụ</h2>
-    <p>Ứng dụng cung cấp thông tin sản phẩm thuốc lào Quảng Định.</p>
-    <p>Không chịu trách nhiệm cho việc sử dụng sai mục đích.</p>
+    <p>Ứng dụng cung cấp thông tin sản phẩm và hỗ trợ đặt hàng tự động.</p>
+    <p>Chúng tôi không chịu trách nhiệm nếu người dùng sử dụng sai mục đích.</p>
     """
-    
+
+@app.route("/delete-data", methods=["POST","GET"])
+def delete_data():
+    return jsonify({
+        "url": "https://yourdomain.com/delete-data",
+        "confirmation_code": "DATA_DELETED"
+    })
+
+# ================= WEBHOOK =================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
-        verify_token = "thuoclao"   # token bạn đã nhập trong Facebook
+        verify_token = "thuoclao"
         token_sent = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
 
@@ -188,29 +222,27 @@ def webhook():
         for entry in data.get("entry", []):
             for event in entry.get("messaging", []):
                 sender_id = event["sender"]["id"]
-
                 text = event.get("message", {}).get("text", "").lower()
 
                 if not text:
                     return "ok"
 
-                if text == "/report":
-                    daily_report()
-                    return "ok"
+                customers = load_data(CUSTOMER_FILE)
+                customers[sender_id] = {"last_message": str(datetime.now())}
+                save_data(CUSTOMER_FILE, customers)
 
-                handle_sale_flow(sender_id, text)
-
-            send_quick_reply(sender_id)
+                if not handle_sale_flow(sender_id, text):
+                    reply = ai_reply(text)
+                    send_message(sender_id, reply)
 
     return "ok"
-
 
 # ================= RUN =================
 if __name__ == "__main__":
     scheduler = BackgroundScheduler()
     scheduler.add_job(daily_report, 'cron', hour=21, minute=0)
+    scheduler.add_job(post_daily_content, 'cron', hour=19, minute=30)
     scheduler.start()
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
