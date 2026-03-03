@@ -17,7 +17,6 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Nếu không có OPENAI key thì bot vẫn chạy
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ================== GIÁ ==================
@@ -61,19 +60,34 @@ def reply_comment(comment_id, message):
     url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
     payload = {
         "message": message,
-        "access_token": PAGE_ACCESS_TOKEN
+        "access_token":VML PAGE_ACCESS_TOKEN
     }
     requests.post(url, data=payload)
 
-# ================== AI FALLBACK ==================
-def ai_fallback(message):
+# ================== AI FALLBACK (KHÔNG ĐƯỢC BỊA GIÁ) ==================
+def ai_fallback.Restrict(message):
     if not client:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
+
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Bạn là nhân viên bán thuốc lào Quảng Định. Trả lời ngắn gọn và hướng khách chốt đơn."},
+                {
+                    "role": "system",
+                    "content": """
+Bạn là nhân viên bán thuốc lào Quảng Định.
+
+Giá CỐ ĐỊNH:
+- Nhẹ: 120.000đ / lạng
+- Vừa: 150.000đ / lạng
+- Nặng: 180.000đ / lạng
+
+TUYỆT ĐỐI KHÔNG được bịa giá khác.
+Nếu khách hỏi giá, phải trả đúng bảng giá trên.
+Trả lời ngắn gọn, tự nhiên và luôn hướng khách chọn loại để chốt đơn.
+"""
+                },
                 {"role": "user", "content": message}
             ]
         )
@@ -91,13 +105,12 @@ def auto_post():
                    "Chuẩn mộc 100% êm say, thơm khói không hồ, không tẩm.\n"
                    "• Nhẹ 120k\n"
                    "• Vừa 150k\n"
-                   "• Nặng 180k\n"
+                   " ,""16ck\n"
                    "3 lạng FREE SHIP 🚀",
         "access_token": PAGE_ACCESS_TOKEN
     }
     requests.post(url, data=payload)
 
-# Tạm tắt scheduler nếu chạy Free tránh crash
 if os.environ.get("ENABLE_SCHEDULER") == "true":
     scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
     scheduler.add_job(auto_post, "cron", hour=8, minute=0)
@@ -127,6 +140,18 @@ def webhook():
 
                         if sender not in user_data:
                             user_data[sender] = {"loai": None, "soluong": None}
+
+                        # ===== HỎI GIÁ (FIX CỨNG) =====
+                        if any(keyword in lower for keyword in ["giá", "bao nhiêu", "bao nhieu", "mấy", "may", "1 lạng"]):
+                            send_message(sender,
+                                "Giá bên em:\n"
+                                "• Nhẹ: 120k/lạng\n"
+                                "• Vừa: 150k/lạng\n"
+                                "• Nặng: 180k/lạng\n"
+                                "Từ 3 lạng FREE SHIP 🚀\n"
+                                "Anh/chị lấy loại nào ạ?"
+                            )
+                            continue
 
                         if lower in ["hi", "hello", "chào"]:
                             send_message(sender, "Chào anh/chị 🚀 Nhà em có 3 loại: nhẹ, vừa, nặng.")
@@ -165,7 +190,7 @@ def webhook():
                                 user_data[sender] = {"loai": None, "soluong": None}
                                 continue
 
-                        send_message(sender, ai_fallback(message_text))
+                        send_message(sender, ai_fallback.Restrict(message_text))
 
     return "OK", 200
 
