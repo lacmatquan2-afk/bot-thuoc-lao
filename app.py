@@ -3,6 +3,7 @@ import requests
 import re
 import csv
 import json
+import random
 from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -14,7 +15,6 @@ app = Flask(__name__)
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 PAGE_ID = os.environ.get("PAGE_ID")
-
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -36,7 +36,61 @@ INTRO_MESSAGE = (
     "• Vừa 150k\n"
     "• Nặng 180k\n"
     "Từ 3 lạng FREE SHIP 🚀\n"
+    "Anh cho shop xin:\n"
+    "- Loại (nhẹ/vừa/nặng)\n"
+    "- Số lượng (bao nhiêu lạng)\n"
+    "- SĐT\n"
+    "- Địa chỉ nhận hàng\n"
 )
+
+# ================== AUTO POST 8H ==================
+
+POST_IMAGES = [
+    "https://i.imgur.com/yourimage1.jpg",
+    "https://i.imgur.com/yourimage2.jpg",
+    "https://i.imgur.com/yourimage3.jpg"
+]
+
+def generate_random_post():
+    text_random = random.choice([
+        "Hàng mới phơi sáng nay 🔥",
+        "Mẻ này cực êm và đằm 💨",
+        "Thuốc khô giòn, đúng chuẩn Quảng Định 🚀",
+        "Hàng chọn lọc kỹ từng lá 🔥"
+    ])
+
+    scarcity = random.randint(15, 40)
+
+    content = (
+        f"🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n\n"
+        f"{text_random}\n"
+        f"Hôm nay còn khoảng {scarcity}kg.\n\n"
+        f"• Nhẹ 120k\n"
+        f"• Vừa 150k\n"
+        f"• Nặng 180k\n"
+        f"Từ 3 lạng FREE SHIP 🚀\n\n"
+        f"Inbox ngay giữ hàng!"
+    )
+
+    image = random.choice(POST_IMAGES)
+    return content, image
+
+def auto_post():
+    if not PAGE_ACCESS_TOKEN or not PAGE_ID:
+        return
+
+    message, image_url = generate_random_post()
+
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/photos"
+    requests.post(url, data={
+        "url": image_url,
+        "caption": message,
+        "access_token": PAGE_ACCESS_TOKEN
+    })
+
+scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post, "cron", hour=8, minute=0)
+scheduler.start()
 
 # ================== SEND FB ==================
 def send_message(uid, text):
@@ -103,76 +157,25 @@ def detect_loai(text):
         return "nặng"
     return None
 
-# ================== AI TƯ VẤN THÔNG MINH ==================
-def ai_chat_reply(user_message, state):
+# ================== AI CHỈ TRẢ LỜI NGOÀI LUỒNG ==================
+def ai_chat_reply(user_message):
     if not client:
         return None
-
-    try:
-        conversation_context = f"""
-Khách đang quan tâm thuốc lào Quảng Định.
-
-Thông tin hiện có:
-Loại: {state.get('loai')}
-Số lượng: {state.get('soluong')}
-SĐT: {state.get('phone')}
-Địa chỉ: {state.get('address')}
-
-Nhiệm vụ:
-- Trả lời tự nhiên như người bán hàng thật.
-- Không lặp lại câu cũ.
-- Tư vấn thuốc lào Quảng Định đúng chất: êm, say, sạch.
-- Luôn khéo léo dẫn khách về chốt đơn.
-- Nếu khách hỏi ngoài luồng vẫn trả lời lịch sự rồi kéo về sản phẩm.
-- Trả lời ngắn gọn, không quá dài.
-"""
-
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.9,
-            messages=[
-                {"role": "system", "content": conversation_context},
-                {"role": "user", "content": user_message}
-            ]
-        )
-
-        return res.choices[0].message.content.strip()
-
-    except:
-        return None
-
-# ================== AI PARSE JSON ==================
-def ai_extract_info(text):
-    if not client:
-        return {}
-
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0,
+            temperature=0.8,
             messages=[
                 {
                     "role": "system",
-                    "content": """
-Trích xuất thông tin đơn hàng từ tin nhắn.
-Chỉ trả về JSON thuần, không thêm chữ ngoài.
-
-{
-"name": "...",
-"phone": "...",
-"address": "...",
-"quantity": số,
-"type": "nhẹ/vừa/nặng"
-}
-Nếu không có thì để null.
-"""
+                    "content": "Bạn là người bán thuốc lào. Trả lời ngắn gọn, lịch sự. Sau đó luôn kéo khách quay lại việc chọn loại và số lượng."
                 },
-                {"role": "user", "content": text}
+                {"role": "user", "content": user_message}
             ]
         )
-        return json.loads(res.choices[0].message.content)
+        return res.choices[0].message.content.strip()
     except:
-        return {}
+        return None
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -197,9 +200,7 @@ def webhook():
                         "soluong": None,
                         "phone": None,
                         "address": None,
-                        "name": None,
-                        "intro_sent": False,
-                        "last_reply": ""
+                        "intro_sent": False
                     }
 
                 state = user_data[sender]
@@ -208,25 +209,13 @@ def webhook():
                     send_message(sender, INTRO_MESSAGE)
                     state["intro_sent"] = True
 
-                # REGEX
+                # FORM CỨNG
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
 
-                # AI extract
-                ai_data = ai_extract_info(text)
-
-                if ai_data.get("type"):
-                    state["loai"] = ai_data["type"]
-                if ai_data.get("quantity"):
-                    state["soluong"] = ai_data["quantity"]
-                if ai_data.get("phone"):
-                    state["phone"] = ai_data["phone"]
-                if ai_data.get("address"):
-                    state["address"] = ai_data["address"]
-
-                # ===== CHỐT ĐƠN =====
+                # ===== CHỐT ĐƠN CỨNG =====
                 if state["loai"] and state["soluong"] and state["phone"] and state["address"]:
                     total, ship = calculate_total(state["loai"], state["soluong"])
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
@@ -236,7 +225,7 @@ def webhook():
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n"
-                        "Shop giao 2-4 ngày 🚚"
+                        f"Giao 2-4 ngày 🚚"
                     )
 
                     send_message(sender, confirm_text)
@@ -250,31 +239,22 @@ def webhook():
                         state["address"]
                     ])
 
-                    send_telegram(
-                        f"🔥 ĐƠN MỚI 🔥\n"
-                        f"{state['soluong']} lạng {state['loai']}\n"
-                        f"Tổng: {total:,}đ\n"
-                        f"SĐT: {state['phone']}\n"
-                        f"Địa chỉ: {state['address']}"
-                    )
+                    send_telegram(confirm_text)
 
                     user_data[sender] = {
                         "loai": None,
                         "soluong": None,
                         "phone": None,
                         "address": None,
-                        "name": None,
-                        "intro_sent": True,
-                        "last_reply": ""
+                        "intro_sent": True
                     }
                     continue
 
-                # ===== AI CHAT TRÁNH LẶP =====
-                ai_reply = ai_chat_reply(text, state)
-
-                if ai_reply and ai_reply != state["last_reply"]:
-                    send_message(sender, ai_reply)
-                    state["last_reply"] = ai_reply
+                # ===== NGOÀI LUỒNG MỚI DÙNG AI =====
+                if not (detect_loai(text) or detect_quantity(text) or detect_phone(text)):
+                    ai_reply = ai_chat_reply(text)
+                    if ai_reply:
+                        send_message(sender, ai_reply)
 
     return "OK", 200
 
