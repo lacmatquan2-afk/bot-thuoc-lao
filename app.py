@@ -8,6 +8,8 @@ from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -30,20 +32,19 @@ CSV_FILE = "orders.csv"
 
 INTRO_MESSAGE = (
     "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-    "Êm – Say – Không hồ – Không tẩm – Không pha trộn\n"
-    "Cam kết thuốc sạch chuẩn gốc Quảng Định 🚀\n\n"
     "• Nhẹ 120k\n"
     "• Vừa 150k\n"
     "• Nặng 180k\n"
-    "Từ 3 lạng FREE SHIP 🚀\n"
+    "Từ 3 lạng FREE SHIP 🚀\n\n"
     "Anh cho shop xin:\n"
-    "- Loại (nhẹ/vừa/nặng)\n"
-    "- Số lượng (bao nhiêu lạng)\n"
+    "- Loại (nhẹ/vừa/nặng hoặc 120k/150k/180k)\n"
+    "- Số lượng (lạng/kg)\n"
+    "- Họ tên\n"
     "- SĐT\n"
     "- Địa chỉ nhận hàng\n"
 )
 
-# ================== AUTO POST 8H ==================
+# ================== AUTO POST ==================
 
 POST_IMAGES = [
     "https://i.imgur.com/yourimage1.jpg",
@@ -52,35 +53,22 @@ POST_IMAGES = [
 ]
 
 def generate_random_post():
-    text_random = random.choice([
-        "Hàng mới phơi sáng nay 🔥",
-        "Mẻ này cực êm và đằm 💨",
-        "Thuốc khô giòn, đúng chuẩn Quảng Định 🚀",
-        "Hàng chọn lọc kỹ từng lá 🔥"
-    ])
-
     scarcity = random.randint(15, 40)
-
     content = (
         f"🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n\n"
-        f"{text_random}\n"
-        f"Hôm nay còn khoảng {scarcity}kg.\n\n"
+        f"Hôm nay còn khoảng {scarcity}kg.\n"
         f"• Nhẹ 120k\n"
         f"• Vừa 150k\n"
         f"• Nặng 180k\n"
-        f"Từ 3 lạng FREE SHIP 🚀\n\n"
+        f"Từ 3 lạng FREE SHIP 🚀\n"
         f"Inbox ngay giữ hàng!"
     )
-
-    image = random.choice(POST_IMAGES)
-    return content, image
+    return content, random.choice(POST_IMAGES)
 
 def auto_post():
     if not PAGE_ACCESS_TOKEN or not PAGE_ID:
         return
-
     message, image_url = generate_random_post()
-
     url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/photos"
     requests.post(url, data={
         "url": image_url,
@@ -91,6 +79,17 @@ def auto_post():
 scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
 scheduler.add_job(auto_post, "cron", hour=8, minute=0)
 scheduler.start()
+
+# ===== Anti Sleep Thread =====
+def keep_alive():
+    while True:
+        try:
+            requests.get("https://bot-thuoc-lao.onrender.com/")
+        except:
+            pass
+        time.sleep(300)
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # ================== SEND FB ==================
 def send_message(uid, text):
@@ -128,12 +127,13 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
-# ================== REGEX ==================
+# ================== REGEX NÂNG CẤP ==================
 def detect_quantity(text):
-    kg = re.search(r'(\d+)\s*(kg|ký)', text)
+    kg = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)', text)
     lang = re.search(r'(\d+)\s*(lạng|lang)', text)
+
     if kg:
-        return int(kg.group(1)) * 10
+        return int(float(kg.group(1)) * 10)
     if lang:
         return int(lang.group(1))
     return None
@@ -142,40 +142,58 @@ def detect_phone(text):
     m = re.search(r'0\d{9,10}', text)
     return m.group() if m else None
 
+def detect_name(text):
+    match = re.search(r'(?:tên|toi ten|tôi tên|mình tên)\s+([a-zA-ZÀ-ỹ\s]+)', text)
+    if match:
+        return match.group(1).strip()
+    return None
+
 def detect_address(text):
-    keywords = ["đường", "xã", "huyện", "tỉnh", "thôn", "phường", "quận"]
-    if any(k in text for k in keywords) and len(text) > 10:
+    if len(text) > 10 and any(x in text for x in ["đường", "xã", "huyện", "tỉnh", "quận"]):
         return text
     return None
 
 def detect_loai(text):
-    if "nhẹ" in text or "120" in text:
+    if "120" in text or "120k" in text:
         return "nhẹ"
-    if "vừa" in text or "150" in text:
+    if "150" in text or "150k" in text:
         return "vừa"
-    if "nặng" in text or "180" in text:
+    if "180" in text or "180k" in text:
+        return "nặng"
+    if "nhẹ" in text:
+        return "nhẹ"
+    if "vừa" in text:
+        return "vừa"
+    if "nặng" in text:
         return "nặng"
     return None
 
-# ================== AI CHỈ TRẢ LỜI NGOÀI LUỒNG ==================
-def ai_chat_reply(user_message):
+# ===== OpenAI extract phụ trợ =====
+def ai_extract_extra(text):
     if not client:
-        return None
+        return {}
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0.8,
+            temperature=0,
             messages=[
                 {
                     "role": "system",
-                    "content": "Bạn là người bán thuốc lào. Trả lời ngắn gọn, lịch sự. Sau đó luôn kéo khách quay lại việc chọn loại và số lượng."
+                    "content": """Trích xuất JSON:
+{
+"name": "...",
+"phone": "...",
+"address": "...",
+"quantity": số (lạng),
+"type": "nhẹ/vừa/nặng"
+}"""
                 },
-                {"role": "user", "content": user_message}
+                {"role": "user", "content": text}
             ]
         )
-        return res.choices[0].message.content.strip()
+        return json.loads(res.choices[0].message.content)
     except:
-        return None
+        return {}
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -200,6 +218,7 @@ def webhook():
                         "soluong": None,
                         "phone": None,
                         "address": None,
+                        "name": None,
                         "intro_sent": False
                     }
 
@@ -209,19 +228,32 @@ def webhook():
                     send_message(sender, INTRO_MESSAGE)
                     state["intro_sent"] = True
 
-                # FORM CỨNG
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
+                state["name"] = detect_name(text) or state["name"]
 
-                # ===== CHỐT ĐƠN CỨNG =====
+                # AI bổ trợ nếu thiếu
+                ai_data = ai_extract_extra(text)
+                if ai_data.get("type"):
+                    state["loai"] = ai_data["type"]
+                if ai_data.get("quantity"):
+                    state["soluong"] = ai_data["quantity"]
+                if ai_data.get("phone"):
+                    state["phone"] = ai_data["phone"]
+                if ai_data.get("address"):
+                    state["address"] = ai_data["address"]
+                if ai_data.get("name"):
+                    state["name"] = ai_data["name"]
+
                 if state["loai"] and state["soluong"] and state["phone"] and state["address"]:
                     total, ship = calculate_total(state["loai"], state["soluong"])
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
                     confirm_text = (
                         f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+                        f"Tên: {state['name']}\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n"
@@ -246,15 +278,9 @@ def webhook():
                         "soluong": None,
                         "phone": None,
                         "address": None,
+                        "name": None,
                         "intro_sent": True
                     }
-                    continue
-
-                # ===== NGOÀI LUỒNG MỚI DÙNG AI =====
-                if not (detect_loai(text) or detect_quantity(text) or detect_phone(text)):
-                    ai_reply = ai_chat_reply(text)
-                    if ai_reply:
-                        send_message(sender, ai_reply)
 
     return "OK", 200
 
