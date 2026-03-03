@@ -13,7 +13,6 @@ app = Flask(__name__)
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 PAGE_ID = os.environ.get("PAGE_ID")
-
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -69,7 +68,7 @@ def save_order(order):
     with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["Time", "Loai", "SoLuong(lạng)", "Tong", "SDT", "DiaChi"])
+            writer.writerow(["Time", "HoTen", "Loai", "SoLuong(lạng)", "Tong", "SDT", "DiaChi"])
         writer.writerow(order)
 
 # ================== CALCULATE ==================
@@ -106,11 +105,16 @@ def detect_address(text):
         return text
     return None
 
+# ======= THÊM PHẦN NHẬN DIỆN HỌ TÊN =======
+def detect_name(text):
+    if len(text.split()) >= 2 and not detect_phone(text) and not detect_quantity(text):
+        return text.title()
+    return None
+
 # ================== AI REPLY ==================
 def ai_reply(text):
     if not client:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
-
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -127,7 +131,7 @@ Giá:
 - Nặng 180k
 
 Nếu khách hỏi ngoài lề → trả lời ngắn gọn rồi dẫn về hỏi mua loại nào và bao nhiêu lạng.
-Nếu khách có ý định mua → yêu cầu gửi địa chỉ + SĐT để chốt đơn.
+Nếu khách có ý định mua → yêu cầu gửi họ tên + địa chỉ + SĐT để chốt đơn.
 """
                 },
                 {"role": "user", "content": text}
@@ -145,35 +149,6 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            # ===== COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        comment = change["value"]
-                        if "comment_id" in comment:
-                            comment_id = comment["comment_id"]
-                            message = comment.get("message", "").lower()
-
-                            qty = detect_quantity(message)
-
-                            if qty:
-                                total = 150000 * qty
-                                reply_comment(comment_id,
-                                    f"{INTRO_MESSAGE}"
-                                    f"{qty} lạng\n"
-                                    f"Tổng: {total:,}đ\n"
-                                    "Anh/chị inbox gửi giúp em địa chỉ + SĐT để chốt đơn ạ 🚀"
-                                )
-                            else:
-                                reply_comment(comment_id,
-                                    f"{INTRO_MESSAGE}"
-                                    "• Nhẹ 120k\n"
-                                    "• Vừa 150k\n"
-                                    "• Nặng 180k\n"
-                                    "Anh/chị cần loại nào và bao nhiêu lạng ạ?"
-                                )
-
-            # ===== INBOX =====
             if "messaging" not in entry:
                 continue
 
@@ -185,65 +160,68 @@ def webhook():
                 text = event["message"].get("text", "").lower()
 
                 if sender not in user_data:
-                    user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
+                    user_data[sender] = {
+                        "name": None,
+                        "loai": None,
+                        "soluong": None,
+                        "phone": None,
+                        "address": None
+                    }
                     send_message(sender, INTRO_MESSAGE)
 
                 state = user_data[sender]
 
-                # Nếu khách nhắn giá 150k
-                if "150" in text:
-                    state["loai"] = "vừa"
-                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                    continue
+                # ===== NHẬN DIỆN TÊN =====
+                name = detect_name(text)
+                if name:
+                    state["name"] = name
 
-                if "120" in text:
-                    state["loai"] = "nhẹ"
-                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                    continue
-
-                if "180" in text:
-                    state["loai"] = "nặng"
-                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                    continue
-
-                qty = detect_quantity(text)
-                if qty:
-                    state["soluong"] = qty
-                    if not state["loai"]:
-                        send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
-                        continue
-
-                    total, ship = calculate_total(state["loai"], qty)
-                    ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
-
-                    send_message(sender,
-                        f"{qty} lạng {state['loai']}\n"
-                        f"{ship_text}\n"
-                        f"Tổng: {total:,}đ\n"
-                        "Anh/chị gửi giúp em địa chỉ + SĐT để em chốt đơn ạ 🚀")
-                    continue
-
+                # ===== NHẬN DIỆN SĐT =====
                 phone = detect_phone(text)
                 if phone:
                     state["phone"] = phone
 
+                # ===== NHẬN DIỆN ĐỊA CHỈ =====
                 address = detect_address(text)
                 if address:
                     state["address"] = address
 
-                if all(state.values()):
+                # ===== NHẬN DIỆN SỐ LƯỢNG =====
+                qty = detect_quantity(text)
+                if qty:
+                    state["soluong"] = qty
+
+                # ===== CHỌN LOẠI =====
+                if "nhẹ" in text:
+                    state["loai"] = "nhẹ"
+                if "vừa" in text:
+                    state["loai"] = "vừa"
+                if "nặng" in text:
+                    state["loai"] = "nặng"
+
+                # ===== NẾU ĐỦ THÔNG TIN → CHỐT ĐƠN NGAY =====
+                if all([
+                    state["name"],
+                    state["loai"],
+                    state["soluong"],
+                    state["phone"],
+                    state["address"]
+                ]):
+
                     total, ship = calculate_total(state["loai"], state["soluong"])
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
                     send_message(sender,
-                        f"Em cảm ơn anh/chị đã tin tưởng ủng hộ ❤️\n"
+                        f"🎉 Cảm ơn anh/chị {state['name']} đã tin tưởng shop Quang Anh của chúng tôi ❤️\n\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n\n"
-                        "Đơn sẽ được giao trong 2-4 ngày tùy khu vực 🚚")
+                        "Đơn sẽ được giao trong 2-4 ngày 🚚"
+                    )
 
                     order_row = [
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        state["name"],
                         state["loai"],
                         state["soluong"],
                         total,
@@ -252,9 +230,25 @@ def webhook():
                     ]
 
                     save_order(order_row)
-                    send_telegram(f"🔥 ĐƠN MỚI 🔥\n{order_row}")
 
-                    user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
+                    send_telegram(
+                        f"🔥 ĐƠN MỚI 🔥\n"
+                        f"Tên: {state['name']}\n"
+                        f"Loại: {state['loai']}\n"
+                        f"Số lượng: {state['soluong']} lạng\n"
+                        f"Tổng: {total:,}đ\n"
+                        f"SĐT: {state['phone']}\n"
+                        f"Địa chỉ: {state['address']}"
+                    )
+
+                    user_data[sender] = {
+                        "name": None,
+                        "loai": None,
+                        "soluong": None,
+                        "phone": None,
+                        "address": None
+                    }
+
                     continue
 
                 send_message(sender, ai_reply(text))
