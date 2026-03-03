@@ -1,6 +1,6 @@
 import requests
 import re
-impost os
+import os
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
@@ -227,5 +227,6 @@ def ping():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
