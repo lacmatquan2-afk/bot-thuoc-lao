@@ -9,15 +9,16 @@ from openai import OpenAI
 app = Flask(__name__)
 
 # ================== CẤU HÌNH ==================
-PAGE_ACCESS_TOKEN = "EAFwl3GoHM8QBQ7coqQbJu6t3GuLw0X2mEuqsxXGLxPGeiIFJCrrvd9MKMWonG4XIXi4TXjpwATfzlwsG1HMORmM4MiUOOxpMUDZC1vJ1eKVxnUqivsBL0nsSbcB4nvZCyvSzt3pUv43ZCwJEZCvm8pODtLkTmbhUMnQMJ1CHW0NcpZA5bIuTF6TEweKwFTcxWe893FoBScwZDZD"
-VERIFY_TOKEN = "bot_thuoc_lao_2026"
-PAGE_ID = "61581088756598"
+PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+PAGE_ID = os.environ.get("PAGE_ID")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-TELEGRAM_BOT_TOKEN = "8745505917:AAHqOKHMxkkOTccLJmuRWilRd7GtKikny7Y"
-TELEGRAM_CHAT_ID = "8231202381"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Nếu không có OPENAI key thì bot vẫn chạy
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ================== GIÁ ==================
 PRICE = {
@@ -33,6 +34,8 @@ comment_replied = set()
 
 # ================== GỬI TIN NHẮN ==================
 def send_message(recipient_id, message_text):
+    if not PAGE_ACCESS_TOKEN:
+        return
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     payload = {
         "recipient": {"id": recipient_id},
@@ -42,7 +45,7 @@ def send_message(recipient_id, message_text):
 
 # ================== GỬI TELEGRAM ==================
 def send_telegram(text):
-    if not TELEGRAM_BOT_TOKEN:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -53,6 +56,8 @@ def send_telegram(text):
 
 # ================== TRẢ LỜI COMMENT ==================
 def reply_comment(comment_id, message):
+    if not PAGE_ACCESS_TOKEN:
+        return
     url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
     payload = {
         "message": message,
@@ -62,24 +67,24 @@ def reply_comment(comment_id, message):
 
 # ================== AI FALLBACK ==================
 def ai_fallback(message):
+    if not client:
+        return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Bạn là nhân viên bán thuốc lào Quảng Định. Trả lời tự nhiên, ngắn gọn, luôn hướng khách về chốt đơn."
-                },
+                {"role": "system", "content": "Bạn là nhân viên bán thuốc lào Quảng Định. Trả lời ngắn gọn và hướng khách chốt đơn."},
                 {"role": "user", "content": message}
             ]
         )
         return response.choices[0].message.content
     except:
-        return "Anh/chị cần tư vấn loại nào ạ?"
+        return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
 
 # ================== AUTO ĐĂNG BÀI ==================
 def auto_post():
-    print("Đang auto đăng bài...")
+    if not PAGE_ID or not PAGE_ACCESS_TOKEN:
+        return
     url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
     payload = {
         "message": "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
@@ -90,13 +95,13 @@ def auto_post():
                    "3 lạng FREE SHIP 🚀",
         "access_token": PAGE_ACCESS_TOKEN
     }
-    res = requests.post(url, data=payload)
-    print("Auto post status:", res.status_code)
-    print("Auto post response:", res.text)
+    requests.post(url, data=payload)
 
-scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
-scheduler.add_job(auto_post, "cron", hour=8, minute=0)
-scheduler.start()
+# Tạm tắt scheduler nếu chạy Free tránh crash
+if os.environ.get("ENABLE_SCHEDULER") == "true":
+    scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+    scheduler.add_job(auto_post, "cron", hour=8, minute=0)
+    scheduler.start()
 
 # ================== VERIFY WEBHOOK ==================
 @app.route("/webhook", methods=["GET"])
@@ -113,7 +118,6 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            # ===== INBOX =====
             if "messaging" in entry:
                 for event in entry["messaging"]:
                     if "message" in event:
@@ -124,28 +128,20 @@ def webhook():
                         if sender not in user_data:
                             user_data[sender] = {"loai": None, "soluong": None}
 
-                        # Chào
                         if lower in ["hi", "hello", "chào"]:
-                            send_message(sender,
-                                "Chào bạn đến với THUỐC LÀO QUẢNG ĐỊNH 🚀\n"
-                                "Nhà em có 3 loại: nhẹ, vừa, nặng.\n"
-                                "Anh/chị muốn loại nào ạ?"
-                            )
+                            send_message(sender, "Chào anh/chị 🚀 Nhà em có 3 loại: nhẹ, vừa, nặng.")
                             continue
 
-                        # Chọn loại
                         if lower in PRICE:
                             user_data[sender]["loai"] = lower
                             send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
                             continue
 
-                        # Số lượng
                         if lower.isdigit() and user_data[sender]["loai"]:
                             user_data[sender]["soluong"] = int(lower)
                             send_message(sender, "Anh/chị gửi địa chỉ + SĐT giúp em ạ.")
                             continue
 
-                        # Nhận SĐT
                         phone_match = re.search(r'0\d{9,10}', lower)
                         if phone_match:
                             phone = phone_match.group()
@@ -154,63 +150,22 @@ def webhook():
 
                             if loai and soluong:
                                 total = soluong * PRICE[loai]
-
-                                if soluong >= 3:
-                                    final_total = total
-                                    ship_text = "Miễn phí ship 🚀"
-                                else:
-                                    final_total = total + 30000
-                                    ship_text = "Phí ship 30k"
+                                final_total = total if soluong >= 3 else total + 30000
 
                                 send_message(sender,
                                     f"Đơn {soluong} lạng loại {loai}\n"
-                                    f"Tổng: {total:,}đ\n"
-                                    f"{ship_text}\n"
                                     f"Thanh toán: {final_total:,}đ\n"
                                     "Bên em sẽ gọi xác nhận sớm ạ 🚀"
                                 )
 
-                                order_history.append({
-                                    "id": sender,
-                                    "loai": loai,
-                                    "soluong": soluong,
-                                    "tong": final_total,
-                                    "sdt": phone
-                                })
-
                                 send_telegram(
-                                    f"🔥 ĐƠN MỚI 🔥\n"
-                                    f"Khách ID: {sender}\n"
-                                    f"Loại: {loai}\n"
-                                    f"Số lượng: {soluong}\n"
-                                    f"Tổng: {final_total:,}đ\n"
-                                    f"SĐT: {phone}"
+                                    f"🔥 ĐƠN MỚI 🔥\nLoại: {loai}\nSố lượng: {soluong}\nTổng: {final_total:,}đ\nSĐT: {phone}"
                                 )
 
                                 user_data[sender] = {"loai": None, "soluong": None}
                                 continue
 
-                        # ===== AI NGOÀI LUỒNG =====
-                        ai_reply_text = ai_fallback(message_text)
-                        send_message(sender, ai_reply_text)
-
-            # ===== COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        comment_id = change["value"].get("comment_id")
-                        from_id = change["value"]["from"]["id"]
-                        comment_text = change["value"].get("message", "")
-
-                        if comment_id in comment_replied:
-                            continue
-
-                        comment_replied.add(comment_id)
-
-                        ai_comment_reply = ai_fallback(comment_text)
-
-                        reply_comment(comment_id, ai_comment_reply)
-                        send_message(from_id, ai_comment_reply)
+                        send_message(sender, ai_fallback(message_text))
 
     return "OK", 200
 
