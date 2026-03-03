@@ -1,14 +1,15 @@
 import os
 import requests
 import re
+import csv
+from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
-import pytz
 from openai import OpenAI
 
 app = Flask(__name__)
 
-# ================== CẤU HÌNH ==================
+# ================== CONFIG ==================
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 PAGE_ID = os.environ.get("PAGE_ID")
@@ -19,58 +20,80 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# ================== GIÁ ==================
-PRICE = {
-    "nhẹ": 120000,
-    "vừa": 150000,
-    "nặng": 180000
-}
+PRICE = {"nhẹ": 120000, "vừa": 150000, "nặng": 180000}
+SHIP_FEE = 30000
+FREE_SHIP_FROM = 3
 
-# ================== BỘ NHỚ ==================
 user_data = {}
-order_history = []
-comment_replied = set()
+CSV_FILE = "orders.csv"
 
-# ================== GỬI TIN NHẮN ==================
-def send_message(recipient_id, message_text):
+# ================== SEND FB MESSAGE ==================
+def send_message(uid, text):
     if not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message_text}
-    }
-    requests.post(url, json=payload)
+    requests.post(url, json={
+        "recipient": {"id": uid},
+        "message": {"text": text}
+    })
 
-# ================== GỬI TELEGRAM ==================
-def send_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    }
-    requests.post(url, json=payload)
-
-# ================== TRẢ LỜI COMMENT ==================
+# ================== REPLY COMMENT ==================
 def reply_comment(comment_id, message):
     if not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
-    payload = {
+    requests.post(url, data={
         "message": message,
-        "access_token":VML PAGE_ACCESS_TOKEN
-    }
-    requests.post(url, data=payload)
+        "access_token": PAGE_ACCESS_TOKEN
+    })
 
-# ================== AI FALLBACK (KHÔNG ĐƯỢC BỊA GIÁ) ==================
-def ai_fallback.Restrict(message):
+# ================== SEND TELEGRAM ==================
+def send_telegram(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(url, json={
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text
+    })
+
+# ================== SAVE ORDER CSV ==================
+def save_order(order):
+    file_exists = os.path.isfile(CSV_FILE)
+    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Time", "Loai", "SoLuong", "Tong", "SDT", "DiaChi"])
+        writer.writerow(order)
+
+# ================== CALCULATE ==================
+def calculate_total(loai, soluong):
+    total = PRICE[loai] * soluong
+    if soluong >= FREE_SHIP_FROM:
+        return total, 0
+    return total + SHIP_FEE, SHIP_FEE
+
+# ================== DETECT ==================
+def detect_quantity(text):
+    match = re.search(r'(\d+)\s*(lạng|lang)?', text)
+    return int(match.group(1)) if match else None
+
+def detect_phone(text):
+    match = re.search(r'0\d{9,10}', text)
+    return match.group() if match else None
+
+def detect_address(text):
+    keywords = ["đường", "xã", "huyện", "tỉnh", "thôn", "phường", "quận"]
+    if any(k in text for k in keywords) and len(text) > 10:
+        return text
+    return None
+
+# ================== AI ==================
+def ai_reply(text):
     if not client:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
-
     try:
-        response = client.chat.completions.create(
+        res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
@@ -78,52 +101,46 @@ def ai_fallback.Restrict(message):
                     "content": """
 Bạn là nhân viên bán thuốc lào Quảng Định.
 
-Giá CỐ ĐỊNH:
-- Nhẹ: 120.000đ / lạng
-- Vừa: 150.000đ / lạng
-- Nặng: 180.000đ / lạng
+Giá cố định:
+- Nhẹ: 120k
+- Vừa: 150k
+- Nặng: 180k
 
-TUYỆT ĐỐI KHÔNG được bịa giá khác.
-Nếu khách hỏi giá, phải trả đúng bảng giá trên.
-Trả lời ngắn gọn, tự nhiên và luôn hướng khách chọn loại để chốt đơn.
+Không được đổi giá.
+Không tự tính tiền.
+Chỉ tư vấn, thuyết phục khách chốt đơn nhanh.
 """
                 },
-                {"role": "user", "content": message}
+                {"role": "user", "content": text}
             ]
         )
-        return response.choices[0].message.content
+        return res.choices[0].message.content
     except:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
 
-# ================== AUTO ĐĂNG BÀI ==================
+# ================== AUTO POST 8H ==================
 def auto_post():
     if not PAGE_ID or not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
-    payload = {
-        "message": "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-                   "Chuẩn mộc 100% êm say, thơm khói không hồ, không tẩm.\n"
-                   "• Nhẹ 120k\n"
-                   "• Vừa 150k\n"
-                   " ,""16ck\n"
-                   "3 lạng FREE SHIP 🚀",
+    message = (
+        "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
+        "Chuẩn mộc 100% êm say, không tẩm.\n"
+        "• Nhẹ 120k\n"
+        "• Vừa 150k\n"
+        "• Nặng 180k\n"
+        "Từ 3 lạng FREE SHIP 🚀"
+    )
+    requests.post(url, data={
+        "message": message,
         "access_token": PAGE_ACCESS_TOKEN
-    }
-    requests.post(url, data=payload)
+    })
 
-if os.environ.get("ENABLE_SCHEDULER") == "true":
-    scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
-    scheduler.add_job(auto_post, "cron", hour=8, minute=0)
-    scheduler.start()
+scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post, "cron", hour=8, minute=0)
+scheduler.start()
 
-# ================== VERIFY WEBHOOK ==================
-@app.route("/webhook", methods=["GET"])
-def verify():
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-        return request.args.get("hub.challenge")
-    return "Verify token sai"
-
-# ================== WEBHOOK CHÍNH ==================
+# ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -131,77 +148,121 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            if "messaging" in entry:
-                for event in entry["messaging"]:
-                    if "message" in event:
-                        sender = event["sender"]["id"]
-                        message_text = event["message"].get("text", "")
-                        lower = message_text.lower()
+            # ===== COMMENT SECTION =====
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        value = change["value"]
+                        if value.get("item") == "comment":
+                            comment_id = value["comment_id"]
+                            sender_id = value["from"]["id"]
+                            text = value.get("message", "").lower()
 
-                        if sender not in user_data:
-                            user_data[sender] = {"loai": None, "soluong": None}
-
-                        # ===== HỎI GIÁ (FIX CỨNG) =====
-                        if any(keyword in lower for keyword in ["giá", "bao nhiêu", "bao nhieu", "mấy", "may", "1 lạng"]):
-                            send_message(sender,
-                                "Giá bên em:\n"
-                                "• Nhẹ: 120k/lạng\n"
-                                "• Vừa: 150k/lạng\n"
-                                "• Nặng: 180k/lạng\n"
+                            price_reply = (
+                                "Giá:\n"
+                                "• Nhẹ 120k\n"
+                                "• Vừa 150k\n"
+                                "• Nặng 180k\n"
                                 "Từ 3 lạng FREE SHIP 🚀\n"
-                                "Anh/chị lấy loại nào ạ?"
+                                "Em đã inbox anh/chị để tư vấn chi tiết ạ."
                             )
-                            continue
 
-                        if lower in ["hi", "hello", "chào"]:
-                            send_message(sender, "Chào anh/chị 🚀 Nhà em có 3 loại: nhẹ, vừa, nặng.")
-                            continue
+                            if any(k in text for k in ["giá", "bao nhiêu", "mấy", "lạng", "nặng", "nhẹ"]):
+                                reply_comment(comment_id, price_reply)
+                                send_message(sender_id,
+                                    "Em gửi anh/chị bảng giá chi tiết:\n"
+                                    "• Nhẹ 120k\n"
+                                    "• Vừa 150k\n"
+                                    "• Nặng 180k\n"
+                                    "Từ 3 lạng FREE SHIP 🚀\n"
+                                    "Anh/chị muốn lấy bao nhiêu lạng ạ?")
+            # ===== INBOX SECTION =====
+            if "messaging" not in entry:
+                continue
 
-                        if lower in PRICE:
-                            user_data[sender]["loai"] = lower
-                            send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                            continue
+            for event in entry["messaging"]:
+                if "message" not in event:
+                    continue
 
-                        if lower.isdigit() and user_data[sender]["loai"]:
-                            user_data[sender]["soluong"] = int(lower)
-                            send_message(sender, "Anh/chị gửi địa chỉ + SĐT giúp em ạ.")
-                            continue
+                sender = event["sender"]["id"]
+                text = event["message"].get("text", "").lower()
 
-                        phone_match = re.search(r'0\d{9,10}', lower)
-                        if phone_match:
-                            phone = phone_match.group()
-                            loai = user_data[sender]["loai"]
-                            soluong = user_data[sender]["soluong"]
+                if sender not in user_data:
+                    user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
 
-                            if loai and soluong:
-                                total = soluong * PRICE[loai]
-                                final_total = total if soluong >= 3 else total + 30000
+                state = user_data[sender]
 
-                                send_message(sender,
-                                    f"Đơn {soluong} lạng loại {loai}\n"
-                                    f"Thanh toán: {final_total:,}đ\n"
-                                    "Bên em sẽ gọi xác nhận sớm ạ 🚀"
-                                )
+                if "giá" in text or "bao nhiêu" in text:
+                    send_message(sender,
+                        "Giá:\n• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\nTừ 3 lạng FREE SHIP 🚀")
+                    continue
 
-                                send_telegram(
-                                    f"🔥 ĐƠN MỚI 🔥\nLoại: {loai}\nSố lượng: {soluong}\nTổng: {final_total:,}đ\nSĐT: {phone}"
-                                )
+                if text in PRICE:
+                    state["loai"] = text
+                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                    continue
 
-                                user_data[sender] = {"loai": None, "soluong": None}
-                                continue
+                qty = detect_quantity(text)
+                if qty and state["loai"]:
+                    state["soluong"] = qty
+                    send_message(sender, "Anh/chị gửi địa chỉ + SĐT giúp em ạ.")
+                    continue
 
-                        send_message(sender, ai_fallback.Restrict(message_text))
+                phone = detect_phone(text)
+                if phone:
+                    state["phone"] = phone
+
+                address = detect_address(text)
+                if address:
+                    state["address"] = address
+
+                if all(state.values()):
+                    total, ship = calculate_total(state["loai"], state["soluong"])
+                    ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
+
+                    send_message(sender,
+                        f"XÁC NHẬN ĐƠN\n"
+                        f"{state['soluong']} lạng {state['loai']}\n"
+                        f"{ship_text}\n"
+                        f"Tổng: {total:,}đ\n"
+                        "Bên em sẽ gọi xác nhận.")
+
+                    order_row = [
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        state["loai"],
+                        state["soluong"],
+                        total,
+                        state["phone"],
+                        state["address"]
+                    ]
+
+                    save_order(order_row)
+
+                    send_telegram(
+                        f"🔥 ĐƠN MỚI 🔥\n"
+                        f"{state['soluong']} lạng {state['loai']}\n"
+                        f"Tổng: {total:,}đ\n"
+                        f"SĐT: {state['phone']}\n"
+                        f"Địa chỉ: {state['address']}"
+                    )
+
+                    user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
+                    continue
+
+                send_message(sender, ai_reply(text))
 
     return "OK", 200
 
-# ================== TEST ==================
+# ================== VERIFY ==================
+@app.route("/webhook", methods=["GET"])
+def verify():
+    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+        return request.args.get("hub.challenge")
+    return "Verify token sai"
+
 @app.route("/")
 def home():
-    return "Bot Thuốc Lào Quảng Định đang chạy 🚀"
-
-@app.route("/ping")
-def ping():
-    return "PONG"
+    return "BOT FULL PRO đang chạy 🚀"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
