@@ -1,252 +1,230 @@
 import os
-import hmac
-import hashlib
+import re
 import time
 import threading
 import requests
-import re
+import pytz
 from flask import Flask, request
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from openai import OpenAI
 
 load_dotenv()
+
 app = Flask(__name__)
 
-# ================= ENV =================
-
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-APP_SECRET = os.getenv("APP_SECRET")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 PAGE_ID = os.getenv("PAGE_ID")
-POST_IMAGE_URL = os.getenv("POST_IMAGE_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-GRAPH_URL = "https://graph.facebook.com/v19.0"
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ================= DATA =================
-
 user_data = {}
-processed_comments = set()
 
-FIXED_GREETING = "Chào anh/chị đã đến với THUỐC LÀO QUẢNG ĐỊNH 🚀\n"
-MAIN_CLOSE = "Anh/chị cho em xin SĐT + địa chỉ để em lên đơn ngay ạ."
+# ================= GIÁ =================
 
-PRICE_TABLE = {
+PRICE = {
     "nhẹ": 120000,
     "vừa": 150000,
     "nặng": 180000
 }
 
-# ================= SECURITY =================
+# ================= SEND MESSAGE =================
 
-def verify_signature(req):
-    signature = req.headers.get("X-Hub-Signature-256")
-    if not signature:
-        return False
-    sha_name, signature = signature.split("=")
-    mac = hmac.new(APP_SECRET.encode(), msg=req.data, digestmod=hashlib.sha256)
-    return hmac.compare_digest(mac.hexdigest(), signature)
+def send_message(recipient_id, message_text):
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text}
+    }
+    requests.post(url, json=payload)
+
+# ================= COMMENT =================
+
+def reply_comment(comment_id, message):
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+    payload = {
+        "message": message,
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post(url, data=payload)
 
 # ================= TELEGRAM =================
 
 def send_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_BOT_TOKEN:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text
+    }
     requests.post(url, json=payload)
 
-# ================= MESSAGE =================
-
-def send_message(uid, text):
-    now = time.time()
-    user = user_data.setdefault(uid, {})
-    if user.get("last_message") == text:
-        return
-    if now - user.get("last_time", 0) < 2:
-        return
-    url = f"{GRAPH_URL}/me/messages"
-    payload = {"recipient": {"id": uid}, "message": {"text": text}}
-    requests.post(url, params={"access_token": PAGE_ACCESS_TOKEN}, json=payload)
-    user["last_message"] = text
-    user["last_time"] = now
-
-def reply_comment(comment_id, text):
-    url = f"{GRAPH_URL}/{comment_id}/comments"
-    requests.post(url, data={"message": text, "access_token": PAGE_ACCESS_TOKEN})
-
-def private_reply(comment_id, text):
-    url = f"{GRAPH_URL}/{comment_id}/private_replies"
-    requests.post(url, data={"message": text, "access_token": PAGE_ACCESS_TOKEN})
-
-# ================= DETECT =================
+# ================= DETECT PHONE =================
 
 def detect_phone(text):
-    match = re.search(r'(0\d{9,10})', text)
+    pattern = r'(0\d{9,10})'
+    match = re.search(pattern, text)
     return match.group(0) if match else None
 
-def detect_quantity(text):
-    text = text.lower()
-    kg = re.search(r'(\d+(?:\.\d+)?)\s*kg', text)
-    if kg:
-        return float(kg.group(1)) * 10
-    gram = re.search(r'(\d+)\s*g', text)
-    if gram:
-        return float(gram.group(1)) / 100
-    lang = re.search(r'(\d+(?:\.\d+)?)\s*l', text)
-    if lang:
-        return float(lang.group(1))
-    return None
+# ================= TÍNH TIỀN =================
 
-def detect_type(text):
-    text = text.lower()
-    for t in PRICE_TABLE:
-        if t in text:
-            return t
+def calculate_price(text):
+    lower = text.lower()
+
+    # Tìm số lạng
+    numbers = re.findall(r'\d+', lower)
+    if not numbers:
+        return None
+
+    lang = int(numbers[0])
+
+    # Xác định loại
+    for loai in PRICE:
+        if loai in lower:
+            price_per = PRICE[loai]
+            total = lang * price_per
+
+            if lang >= 3:
+                ship = "Miễn phí ship 🚀"
+            else:
+                ship = "Phí ship 30k"
+
+            return f"{lang} lạng loại {loai} = {total:,}đ\n{ship}"
+
     return None
 
 # ================= AI =================
 
-def ai_reply(user_text):
-    system_prompt = """
-Bạn là người bán thuốc lào chuyên nghiệp.
-Trả lời tự nhiên như người thật.
-Ngắn gọn, tập trung chốt đơn.
-Nếu hỏi giá → báo giá.
-Nếu hỏi nặng không → giải thích từng loại.
-Nếu hỏi ngon → hỏi khách thích nặng hay nhẹ.
-"""
+def ai_reply(user_id, message):
+    lower = message.lower()
 
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role":"system","content":system_prompt},
-                {"role":"user","content":user_text}
-            ],
-            temperature=0.6
+    if user_id not in user_data:
+        user_data[user_id] = {"ordered": False}
+
+    # Hỏi giá chung
+    if "giá" in lower:
+        return (
+            "Bên em có:\n"
+            "• Loại nhẹ: 120k/lạng\n"
+            "• Loại vừa: 150k/lạng\n"
+            "• Loại nặng: 180k/lạng\n"
+            "Anh lấy loại nào và bao nhiêu lạng để em tính tiền ạ?"
         )
-        return completion.choices[0].message.content.strip()
-    except:
-        return "Bên em có 3 loại: Nhẹ 120k, Vừa 150k, Nặng 180k ạ."
 
-# ================= REMIND =================
+    # Tính tiền
+    price_info = calculate_price(lower)
+    if price_info:
+        return f"{price_info}\nAnh cho em xin SĐT + địa chỉ để em lên đơn ạ 🚀"
 
-def remind(uid):
-    time.sleep(300)
-    state = user_data.get(uid, {})
-    if not state.get("ordered"):
-        send_message(uid, "Anh/chị còn quan tâm không ạ? Em giữ hàng cho mình nhé 🚀")
+    # Hỏi nặng nhẹ
+    if "nặng" in lower or "nhẹ" in lower or "vừa" in lower:
+        return "Anh lấy bao nhiêu lạng để em tính tổng tiền giúp anh ạ?"
 
-# ================= AUTO POST =================
-
-def auto_post():
-    if not PAGE_ID or not POST_IMAGE_URL:
-        return
-    message = (
-        "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-        "Nhẹ 120k | Vừa 150k | Nặng 180k\n"
-        "Từ 3 lạng miễn phí ship 🚀\n"
-        "Inbox đặt hàng ngay!"
+    # AI fallback
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Bạn là nhân viên bán thuốc lào. Trả lời ngắn gọn, tập trung chốt đơn."},
+            {"role": "user", "content": message}
+        ]
     )
-    url = f"{GRAPH_URL}/{PAGE_ID}/photos"
-    requests.post(url, data={
-        "url": POST_IMAGE_URL,
-        "caption": message,
-        "access_token": PAGE_ACCESS_TOKEN
-    })
+    return response.choices[0].message.content
 
-# ================= ROUTES =================
+# ================= WEBHOOK =================
 
-@app.route("/")
-def home():
-    return "BOT ULTIMATE V5 đang chạy 🚀"
-
-@app.route("/privacy")
-def privacy():
-    return "<h2>Chính sách quyền riêng tư</h2><p>Không chia sẻ dữ liệu.</p>"
-
-@app.route("/terms")
-def terms():
-    return "<h2>Điều khoản sử dụng</h2><p>Ứng dụng hỗ trợ bán hàng tự động.</p>"
-
-@app.route("/webhook", methods=["GET"])
-def verify():
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-        return request.args.get("hub.challenge")
-    return "Sai token"
-
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    if not verify_signature(request):
-        return "Invalid", 403
+    if request.method == "GET":
+        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+            return request.args.get("hub.challenge")
+        return "Invalid"
 
     data = request.get_json()
 
-    if data.get("object") == "page":
-        for entry in data.get("entry", []):
+    for entry in data.get("entry", []):
 
-            # ===== COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change.get("field") == "feed":
-                        value = change["value"]
-                        comment_id = value.get("comment_id")
-                        from_id = value.get("from",{}).get("id")
+        # INBOX
+        for messaging in entry.get("messaging", []):
+            sender = messaging["sender"]["id"]
 
-                        if not comment_id or comment_id in processed_comments:
-                            continue
-                        if from_id == PAGE_ID:
-                            continue
+            if "message" in messaging:
+                text = messaging["message"].get("text", "")
 
-                        processed_comments.add(comment_id)
+                phone = detect_phone(text)
 
-                        reply_comment(comment_id, "Em đã inbox anh/chị rồi ạ 🚀")
-                        private_reply(comment_id, FIXED_GREETING + "Em inbox tư vấn chi tiết ạ.")
+                if phone:
+                    user_data[sender]["ordered"] = True
+                    send_message(sender, "Em đã nhận thông tin. Bên em sẽ gọi xác nhận sớm nhất ạ 🚀")
 
-            # ===== INBOX =====
-            for messaging in entry.get("messaging", []):
-                sender = messaging["sender"]["id"]
+                    send_telegram(
+                        f"🔥 ĐƠN HÀNG MỚI 🔥\n"
+                        f"Khách: {sender}\n"
+                        f"SĐT: {phone}\n"
+                        f"Nội dung: {text}"
+                    )
+                    continue
 
-                if "message" in messaging:
-                    text = messaging["message"].get("text","")
+                reply = ai_reply(sender, text)
+                send_message(sender, reply)
 
-                    qty = detect_quantity(text)
-                    typ = detect_type(text)
-                    phone = detect_phone(text)
+        # COMMENT
+        for change in entry.get("changes", []):
+            if change.get("field") == "feed":
+                value = change.get("value", {})
+                comment_id = value.get("comment_id")
+                from_id = value.get("from", {}).get("id")
 
-                    if qty and typ:
-                        total = qty * PRICE_TABLE[typ]
-                        ship_text = "Miễn phí ship 🚀" if qty >= 3 else "Ship 30k"
-                        send_message(sender,
-                            FIXED_GREETING +
-                            f"Anh/chị lấy {qty} lạng loại {typ}.\n"
-                            f"Tổng tiền: {int(total):,}đ\n{ship_text}\n\n"
-                            + MAIN_CLOSE
-                        )
-                        continue
+                if from_id == PAGE_ID:
+                    continue
 
-                    if phone:
-                        user_data.setdefault(sender,{})["ordered"] = True
-                        send_message(sender, "Em đã nhận thông tin. Bên em sẽ gọi xác nhận và giao hàng sớm ạ 🚀")
-                        send_telegram(f"🔥 ĐƠN MỚI 🔥\nKhách: {sender}\nNội dung: {text}")
-                        continue
+                reply_comment(comment_id, "Em đã inbox anh/chị rồi ạ 🚀")
+                send_message(from_id, "Chào anh/chị, bên em tư vấn ngay ạ!")
 
-                    reply_text = ai_reply(text)
-                    send_message(sender, FIXED_GREETING + reply_text + "\n\n" + MAIN_CLOSE)
-                    threading.Thread(target=remind, args=(sender,)).start()
+    return "OK", 200
 
-    return "ok"
+# ================= AUTO POST =================
 
-# ================= RUN =================
+vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
+
+def auto_post():
+    message = (
+        "🔥 Thuốc lào Quảng Xương 🔥\n"
+        "• Nhẹ 120k\n"
+        "• Vừa 150k\n"
+        "• Nặng 180k\n"
+        "3 lạng freeship 🚀"
+    )
+
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    payload = {
+        "message": message,
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+
+    res = requests.post(url, data=payload)
+    print("Auto post:", res.text)
+
+scheduler = BackgroundScheduler(timezone=vn_tz)
+scheduler.add_job(auto_post, CronTrigger(hour=8, minute=0, timezone=vn_tz))
+scheduler.start()
+
+print("Scheduler started")
+
+# ================= HOME =================
+
+@app.route("/")
+def home():
+    return "Bot is running"
+
+@app.route("/ping")
+def ping():
+    return "pong"
 
 if __name__ == "__main__":
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(auto_post, 'cron', hour=8, minute=0)
-    scheduler.start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
