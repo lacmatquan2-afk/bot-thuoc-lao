@@ -63,7 +63,7 @@ def save_order(order):
     with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["Time", "Loai", "SoLuong", "Tong", "SDT", "DiaChi"])
+            writer.writerow(["Time", "Loai", "SoLuong(lạng)", "Tong", "SDT", "DiaChi"])
         writer.writerow(order)
 
 # ================== CALCULATE ==================
@@ -75,8 +75,20 @@ def calculate_total(loai, soluong):
 
 # ================== DETECT ==================
 def detect_quantity(text):
-    match = re.search(r'(\d+)\s*(lạng|lang)?', text)
-    return int(match.group(1)) if match else None
+    kg_match = re.search(r'(\d+)\s*(kg|ký)', text)
+    lang_match = re.search(r'(\d+)\s*(lạng|lang)', text)
+
+    if kg_match:
+        qty = int(kg_match.group(1)) * 10
+        if 1 <= qty <= 100:
+            return qty
+
+    if lang_match:
+        qty = int(lang_match.group(1))
+        if 1 <= qty <= 100:
+            return qty
+
+    return None
 
 def detect_phone(text):
     match = re.search(r'0\d{9,10}', text)
@@ -88,10 +100,11 @@ def detect_address(text):
         return text
     return None
 
-# ================== AI ==================
+# ================== AI REPLY ==================
 def ai_reply(text):
     if not client:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
+
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -101,14 +114,14 @@ def ai_reply(text):
                     "content": """
 Bạn là nhân viên bán thuốc lào Quảng Định.
 
-Giá cố định:
-- Nhẹ: 120k
-- Vừa: 150k
-- Nặng: 180k
+Giá:
+- Nhẹ 120k
+- Vừa 150k
+- Nặng 180k
 
-Không được đổi giá.
-Không tự tính tiền.
-Chỉ tư vấn, thuyết phục khách chốt đơn nhanh.
+Nếu khách hỏi giá → báo đúng giá.
+Nếu khách nói có, đặt, lấy, chốt hoặc có số lượng
+→ yêu cầu gửi địa chỉ + SĐT để chốt.
 """
                 },
                 {"role": "user", "content": text}
@@ -118,14 +131,13 @@ Chỉ tư vấn, thuyết phục khách chốt đơn nhanh.
     except:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
 
-# ================== AUTO POST 8H ==================
+# ================== AUTO POST ==================
 def auto_post():
     if not PAGE_ID or not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
     message = (
         "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-        "Chuẩn mộc 100% êm say, không tẩm.\n"
         "• Nhẹ 120k\n"
         "• Vừa 150k\n"
         "• Nặng 180k\n"
@@ -148,6 +160,29 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
+            # ===== XỬ LÝ COMMENT =====
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        comment = change["value"]
+                        if "comment_id" in comment:
+                            comment_id = comment["comment_id"]
+                            user_id = comment.get("from", {}).get("id")
+                            message = comment.get("message", "").lower()
+
+                            qty = detect_quantity(message)
+
+                            # Trả lời comment
+                            if qty:
+                                reply_comment(comment_id, "Inbox em để chốt đơn và nhận báo giá chi tiết nhé 🚀")
+                            else:
+                                reply_comment(comment_id, "Anh/chị quan tâm inbox em để được tư vấn và báo giá ạ 🚀")
+
+                            # Tự động inbox khách
+                            if user_id:
+                                send_message(user_id, "Em đã inbox mình rồi ạ, mình check tin nhắn giúp em nhé 🚀")
+
+            # ===== XỬ LÝ INBOX (GIỮ NGUYÊN LOGIC CŨ) =====
             if "messaging" not in entry:
                 continue
 
@@ -163,37 +198,28 @@ def webhook():
 
                 state = user_data[sender]
 
-                # ===== NHẬN DIỆN CHỐT ĐƠN MẠNH =====
-                strong_keywords = [
-                    "đặt hàng", "đặt ngay", "lấy luôn", "chốt",
-                    "ok lấy", "khác bảo có", "tôi muốn lấy", "mình lấy"
-                ]
+                qty = detect_quantity(text)
 
-                kg_match = re.search(r'(\d+)\s*(kg|ký)', text)
-                lang_match = re.search(r'(\d+)\s*(lạng|lang)', text)
+                if text in PRICE:
+                    state["loai"] = text
+                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                    continue
 
-                if any(k in text for k in strong_keywords) or kg_match or lang_match:
-
-                    if kg_match:
-                        qty = int(kg_match.group(1)) * 10
-                    elif lang_match:
-                        qty = int(lang_match.group(1))
-                    else:
-                        qty = detect_quantity(text)
+                if qty:
+                    state["soluong"] = qty
 
                     if not state["loai"]:
                         send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
                         continue
 
-                    if qty:
-                        state["soluong"] = qty
-                        send_message(sender,
-                            "Anh/chị gửi giúp em địa chỉ + SĐT để em lên đơn và ship nhanh nhất ạ 🚀")
-                        continue
+                    total, ship = calculate_total(state["loai"], qty)
+                    ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
-                if text in PRICE:
-                    state["loai"] = text
-                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                    send_message(sender,
+                        f"{qty} lạng {state['loai']}\n"
+                        f"{ship_text}\n"
+                        f"Tổng: {total:,}đ\n"
+                        "Anh/chị gửi giúp em địa chỉ + SĐT để em chốt đơn ạ 🚀")
                     continue
 
                 phone = detect_phone(text)
@@ -213,7 +239,7 @@ def webhook():
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n"
-                        "Bên em sẽ ship đến anh/chị nhanh nhất có thể 🚀")
+                        "Bên em sẽ ship nhanh nhất 🚀")
 
                     order_row = [
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
