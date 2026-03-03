@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # ================== CẤU HÌNH ==================
 PAGE_ACCESS_TOKEN = "YOUR_PAGE_ACCESS_TOKEN"
-VERIFY_TOKEN = "YOUR_VERIFY_TOKEN"
+VERIFY_TOKEN = "bot_thuoc_lao_2026"
 PAGE_ID = "YOUR_PAGE_ID"
 
 OPENAI_API_KEY = "YOUR_OPENAI_KEY"
@@ -227,4 +227,5 @@ def ping():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
