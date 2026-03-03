@@ -1,40 +1,36 @@
-import os
-import re
-import time
-import threading
 import requests
-import pytz
+import re
 from flask import Flask, request
-from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
+import pytz
 from openai import OpenAI
-
-load_dotenv()
 
 app = Flask(__name__)
 
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-PAGE_ID = os.getenv("PAGE_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ================== CẤU HÌNH ==================
+PAGE_ACCESS_TOKEN = "YOUR_PAGE_ACCESS_TOKEN"
+VERIFY_TOKEN = "YOUR_VERIFY_TOKEN"
+PAGE_ID = "YOUR_PAGE_ID"
+
+OPENAI_API_KEY = "YOUR_OPENAI_KEY"
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-user_data = {}
-
-# ================= GIÁ =================
-
+# ================== GIÁ ==================
 PRICE = {
     "nhẹ": 120000,
     "vừa": 150000,
     "nặng": 180000
 }
 
-# ================= SEND MESSAGE =================
+# ================== BỘ NHỚ ==================
+user_data = {}
+order_history = []
+comment_replied = set()
 
+# ================== GỬI TIN NHẮN ==================
 def send_message(recipient_id, message_text):
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     payload = {
@@ -43,18 +39,7 @@ def send_message(recipient_id, message_text):
     }
     requests.post(url, json=payload)
 
-# ================= COMMENT =================
-
-def reply_comment(comment_id, message):
-    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
-    payload = {
-        "message": message,
-        "access_token": PAGE_ACCESS_TOKEN
-    }
-    requests.post(url, data=payload)
-
-# ================= TELEGRAM =================
-
+# ================== GỬI TELEGRAM ==================
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN:
         return
@@ -65,166 +50,177 @@ def send_telegram(text):
     }
     requests.post(url, json=payload)
 
-# ================= DETECT PHONE =================
-
-def detect_phone(text):
-    pattern = r'(0\d{9,10})'
-    match = re.search(pattern, text)
-    return match.group(0) if match else None
-
-# ================= TÍNH TIỀN =================
-
-def calculate_price(text):
-    lower = text.lower()
-
-    # Tìm số lạng
-    numbers = re.findall(r'\d+', lower)
-    if not numbers:
-        return None
-
-    lang = int(numbers[0])
-
-    # Xác định loại
-    for loai in PRICE:
-        if loai in lower:
-            price_per = PRICE[loai]
-            total = lang * price_per
-
-            if lang >= 3:
-                ship = "Miễn phí ship 🚀"
-            else:
-                ship = "Phí ship 30k"
-
-            return f"{lang} lạng loại {loai} = {total:,}đ\n{ship}"
-
-    return None
-
-# ================= AI =================
-
-def ai_reply(user_id, message):
-    lower = message.lower()
-
-    if user_id not in user_data:
-        user_data[user_id] = {"ordered": False}
-
-    # Hỏi giá chung
-    if "giá" in lower:
-        return (
-            "Bên em có:\n"
-            "• Loại nhẹ: 120k/lạng\n"
-            "• Loại vừa: 150k/lạng\n"
-            "• Loại nặng: 180k/lạng\n"
-            "Anh lấy loại nào và bao nhiêu lạng để em tính tiền ạ?"
-        )
-
-    # Tính tiền
-    price_info = calculate_price(lower)
-    if price_info:
-        return f"{price_info}\nAnh cho em xin SĐT + địa chỉ để em lên đơn ạ 🚀"
-
-    # Hỏi nặng nhẹ
-    if "nặng" in lower or "nhẹ" in lower or "vừa" in lower:
-        return "Anh lấy bao nhiêu lạng để em tính tổng tiền giúp anh ạ?"
-
-    # AI fallback
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Bạn là nhân viên bán thuốc lào. Trả lời ngắn gọn, tập trung chốt đơn."},
-            {"role": "user", "content": message}
-        ]
-    )
-    return response.choices[0].message.content
-
-# ================= WEBHOOK =================
-
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    if request.method == "GET":
-        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            return request.args.get("hub.challenge")
-        return "Invalid"
-
-    data = request.get_json()
-
-    for entry in data.get("entry", []):
-
-        # INBOX
-        for messaging in entry.get("messaging", []):
-            sender = messaging["sender"]["id"]
-
-            if "message" in messaging:
-                text = messaging["message"].get("text", "")
-
-                phone = detect_phone(text)
-
-                if phone:
-                    user_data[sender]["ordered"] = True
-                    send_message(sender, "Em đã nhận thông tin. Bên em sẽ gọi xác nhận sớm nhất ạ 🚀")
-
-                    send_telegram(
-                        f"🔥 ĐƠN HÀNG MỚI 🔥\n"
-                        f"Khách: {sender}\n"
-                        f"SĐT: {phone}\n"
-                        f"Nội dung: {text}"
-                    )
-                    continue
-
-                reply = ai_reply(sender, text)
-                send_message(sender, reply)
-
-        # COMMENT
-        for change in entry.get("changes", []):
-            if change.get("field") == "feed":
-                value = change.get("value", {})
-                comment_id = value.get("comment_id")
-                from_id = value.get("from", {}).get("id")
-
-                if from_id == PAGE_ID:
-                    continue
-
-                reply_comment(comment_id, "Em đã inbox anh/chị rồi ạ 🚀")
-                send_message(from_id, "Chào anh/chị, bên em tư vấn ngay ạ!")
-
-    return "OK", 200
-
-# ================= AUTO POST =================
-
-vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
-
-def auto_post():
-    message = (
-        "🔥 Thuốc lào Quảng Xương 🔥\n"
-        "• Nhẹ 120k\n"
-        "• Vừa 150k\n"
-        "• Nặng 180k\n"
-        "3 lạng freeship 🚀"
-    )
-
-    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+# ================== TRẢ LỜI COMMENT ==================
+def reply_comment(comment_id, message):
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
     payload = {
         "message": message,
         "access_token": PAGE_ACCESS_TOKEN
     }
+    requests.post(url, data=payload)
 
+# ================== AI FALLBACK ==================
+def ai_fallback(message):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Bạn là nhân viên bán thuốc lào Quảng Định. Trả lời tự nhiên, ngắn gọn, luôn hướng khách về chốt đơn."
+                },
+                {"role": "user", "content": message}
+            ]
+        )
+        return response.choices[0].message.content
+    except:
+        return "Anh/chị cần tư vấn loại nào ạ?"
+
+# ================== AUTO ĐĂNG BÀI ==================
+def auto_post():
+    print("Đang auto đăng bài...")
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    payload = {
+        "message": "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
+                   "Chuẩn mộc 100% êm say, thơm khói không hồ, không tẩm.\n"
+                   "• Nhẹ 120k\n"
+                   "• Vừa 150k\n"
+                   "• Nặng 180k\n"
+                   "3 lạng FREE SHIP 🚀",
+        "access_token": PAGE_ACCESS_TOKEN
+    }
     res = requests.post(url, data=payload)
-    print("Auto post:", res.text)
+    print("Auto post status:", res.status_code)
+    print("Auto post response:", res.text)
 
-scheduler = BackgroundScheduler(timezone=vn_tz)
-scheduler.add_job(auto_post, CronTrigger(hour=8, minute=0, timezone=vn_tz))
+scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post, "cron", hour=8, minute=0)
 scheduler.start()
 
-print("Scheduler started")
+# ================== VERIFY WEBHOOK ==================
+@app.route("/webhook", methods=["GET"])
+def verify():
+    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+        return request.args.get("hub.challenge")
+    return "Verify token sai"
 
-# ================= HOME =================
+# ================== WEBHOOK CHÍNH ==================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
 
+    if data.get("object") == "page":
+        for entry in data["entry"]:
+
+            # ===== INBOX =====
+            if "messaging" in entry:
+                for event in entry["messaging"]:
+                    if "message" in event:
+                        sender = event["sender"]["id"]
+                        message_text = event["message"].get("text", "")
+                        lower = message_text.lower()
+
+                        if sender not in user_data:
+                            user_data[sender] = {"loai": None, "soluong": None}
+
+                        # Chào
+                        if lower in ["hi", "hello", "chào"]:
+                            send_message(sender,
+                                "Chào bạn đến với THUỐC LÀO QUẢNG ĐỊNH 🚀\n"
+                                "Nhà em có 3 loại: nhẹ, vừa, nặng.\n"
+                                "Anh/chị muốn loại nào ạ?"
+                            )
+                            continue
+
+                        # Chọn loại
+                        if lower in PRICE:
+                            user_data[sender]["loai"] = lower
+                            send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                            continue
+
+                        # Số lượng
+                        if lower.isdigit() and user_data[sender]["loai"]:
+                            user_data[sender]["soluong"] = int(lower)
+                            send_message(sender, "Anh/chị gửi địa chỉ + SĐT giúp em ạ.")
+                            continue
+
+                        # Nhận SĐT
+                        phone_match = re.search(r'0\d{9,10}', lower)
+                        if phone_match:
+                            phone = phone_match.group()
+                            loai = user_data[sender]["loai"]
+                            soluong = user_data[sender]["soluong"]
+
+                            if loai and soluong:
+                                total = soluong * PRICE[loai]
+
+                                if soluong >= 3:
+                                    final_total = total
+                                    ship_text = "Miễn phí ship 🚀"
+                                else:
+                                    final_total = total + 30000
+                                    ship_text = "Phí ship 30k"
+
+                                send_message(sender,
+                                    f"Đơn {soluong} lạng loại {loai}\n"
+                                    f"Tổng: {total:,}đ\n"
+                                    f"{ship_text}\n"
+                                    f"Thanh toán: {final_total:,}đ\n"
+                                    "Bên em sẽ gọi xác nhận sớm ạ 🚀"
+                                )
+
+                                order_history.append({
+                                    "id": sender,
+                                    "loai": loai,
+                                    "soluong": soluong,
+                                    "tong": final_total,
+                                    "sdt": phone
+                                })
+
+                                send_telegram(
+                                    f"🔥 ĐƠN MỚI 🔥\n"
+                                    f"Khách ID: {sender}\n"
+                                    f"Loại: {loai}\n"
+                                    f"Số lượng: {soluong}\n"
+                                    f"Tổng: {final_total:,}đ\n"
+                                    f"SĐT: {phone}"
+                                )
+
+                                user_data[sender] = {"loai": None, "soluong": None}
+                                continue
+
+                        # ===== AI NGOÀI LUỒNG =====
+                        ai_reply_text = ai_fallback(message_text)
+                        send_message(sender, ai_reply_text)
+
+            # ===== COMMENT =====
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        comment_id = change["value"].get("comment_id")
+                        from_id = change["value"]["from"]["id"]
+                        comment_text = change["value"].get("message", "")
+
+                        if comment_id in comment_replied:
+                            continue
+
+                        comment_replied.add(comment_id)
+
+                        ai_comment_reply = ai_fallback(comment_text)
+
+                        reply_comment(comment_id, ai_comment_reply)
+                        send_message(from_id, ai_comment_reply)
+
+    return "OK", 200
+
+# ================== TEST ==================
 @app.route("/")
 def home():
-    return "Bot is running"
+    return "Bot Thuốc Lào Quảng Định đang chạy 🚀"
 
 @app.route("/ping")
 def ping():
-    return "pong"
+    return "PONG"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=5000)
