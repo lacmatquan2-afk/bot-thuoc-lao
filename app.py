@@ -8,13 +8,13 @@ from openai import OpenAI
 app = Flask(__name__)
 
 # ================== CẤU HÌNH ==================
-PAGE_ACCESS_TOKEN = "YOUR_PAGE_ACCESS_TOKEN"
+PAGE_ACCESS_TOKEN = "EAFwl3GoHM8QBQ7coqQbJu6t3GuLw0X2mEuqsxXGLxPGeiIFJCrrvd9MKMWonG4XIXi4TXjpwATfzlwsG1HMORmM4MiUOOxpMUDZC1vJ1eKVxnUqivsBL0nsSbcB4nvZCyvSzt3pUv43ZCwJEZCvm8pODtLkTmbhUMnQMJ1CHW0NcpZA5bIuTF6TEweKwFTcxWe893FoBScwZDZD"
 VERIFY_TOKEN = "bot_thuoc_lao_2026"
-PAGE_ID = "YOUR_PAGE_ID"
+PAGE_ID = "61581088756598"
 
-OPENAI_API_KEY = "YOUR_OPENAI_KEY"
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+TELEGRAM_BOT_TOKEN = "8745505917:AAHqOKHMxkkOTccLJmuRWilRd7GtKikny7Y"
+TELEGRAM_CHAT_ID = "8231202381"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -227,6 +227,7 @@ import os
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
