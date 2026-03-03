@@ -31,6 +31,10 @@ INTRO_MESSAGE = (
     "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
     "Êm – Say – Không hồ – Không tẩm – Không pha trộn\n"
     "Cam kết thuốc sạch chuẩn gốc Quảng Định 🚀\n\n"
+    "• Nhẹ 120k\n"
+    "• Vừa 150k\n"
+    "• Nặng 180k\n"
+    "Từ 3 lạng FREE SHIP 🚀\n"
 )
 
 # ================== SEND FB MESSAGE ==================
@@ -53,7 +57,7 @@ def reply_comment(comment_id, message):
         "access_token": PAGE_ACCESS_TOKEN
     })
 
-# ================== SEND TELEGRAM ==================
+# ================== TELEGRAM ==================
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -63,7 +67,7 @@ def send_telegram(text):
         "text": text
     })
 
-# ================== SAVE ORDER CSV ==================
+# ================== SAVE CSV ==================
 def save_order(order):
     file_exists = os.path.isfile(CSV_FILE)
     with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
@@ -85,14 +89,10 @@ def detect_quantity(text):
     lang_match = re.search(r'(\d+)\s*(lạng|lang)', text)
 
     if kg_match:
-        qty = int(kg_match.group(1)) * 10
-        if 1 <= qty <= 100:
-            return qty
+        return int(kg_match.group(1)) * 10
 
     if lang_match:
-        qty = int(lang_match.group(1))
-        if 1 <= qty <= 100:
-            return qty
+        return int(lang_match.group(1))
 
     return None
 
@@ -108,13 +108,14 @@ def detect_address(text):
 
 def detect_name(text):
     if len(text.split()) >= 2 and not detect_phone(text) and not detect_quantity(text):
-        return text.title()
+        return text
     return None
 
-# ================== AI REPLY ==================
+# ================== AI ==================
 def ai_reply(text):
     if not client:
-        return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
+        return "Anh/chị cho em xin loại và số lượng để em chốt đơn ạ 🚀"
+
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -122,8 +123,9 @@ def ai_reply(text):
                 {
                     "role": "system",
                     "content": """
-Bạn là nhân viên bán thuốc lào Quảng Định.
-Luôn kéo khách về trọng tâm mua hàng và chốt đơn.
+Bạn là nhân viên bán thuốc lào.
+Nếu khách hỏi ngoài lề → trả lời ngắn gọn rồi dẫn về hỏi loại và số lượng.
+Nếu có ý định mua → yêu cầu họ tên + địa chỉ + SĐT để chốt.
 """
                 },
                 {"role": "user", "content": text}
@@ -131,7 +133,22 @@ Luôn kéo khách về trọng tâm mua hàng và chốt đơn.
         )
         return res.choices[0].message.content
     except:
-        return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
+        return "Anh/chị cho em xin loại và số lượng để em chốt đơn ạ 🚀"
+
+# ================== AUTO POST ==================
+def auto_post():
+    if not PAGE_ID or not PAGE_ACCESS_TOKEN:
+        return
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    message = INTRO_MESSAGE
+    requests.post(url, data={
+        "message": message,
+        "access_token": PAGE_ACCESS_TOKEN
+    })
+
+scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post, "cron", hour=8, minute=0)
+scheduler.start()
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -141,6 +158,23 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
+            # ===== COMMENT =====
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        comment = change["value"]
+                        if "comment_id" in comment:
+                            comment_id = comment["comment_id"]
+                            message = comment.get("message", "").lower()
+
+                            reply_comment(
+                                comment_id,
+                                "🔥 Thuốc lào Quảng Định\n"
+                                "• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\n"
+                                "Anh/chị inbox em loại và số lượng để chốt đơn nhé 🚀"
+                            )
+
+            # ===== INBOX =====
             if "messaging" not in entry:
                 continue
 
@@ -153,90 +187,58 @@ def webhook():
 
                 if sender not in user_data:
                     user_data[sender] = {
-                        "intro_sent": False,
                         "loai": None,
                         "soluong": None,
                         "phone": None,
                         "address": None,
-                        "name": None
+                        "name": None,
+                        "intro_sent": False
                     }
 
                 state = user_data[sender]
 
-                # ===== INTRO CHỈ GỬI 1 LẦN =====
                 if not state["intro_sent"]:
                     send_message(sender, INTRO_MESSAGE)
                     state["intro_sent"] = True
 
                 # ===== NHẬN DIỆN LOẠI =====
-                if any(x in text for x in ["nhẹ", "120"]):
-                    state["loai"] = "nhẹ"
-
-                if any(x in text for x in ["vừa", "150"]):
-                    state["loai"] = "vừa"
-
-                if any(x in text for x in ["nặng", "180"]):
-                    state["loai"] = "nặng"
-
-                # Nếu đã có loại nhưng chưa có số lượng
-                if state["loai"] and not state["soluong"]:
-                    qty = detect_quantity(text)
-                    if qty:
-                        state["soluong"] = qty
-                    else:
+                for loai in PRICE:
+                    if loai in text:
+                        state["loai"] = loai
                         send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                        break
+
+                qty = detect_quantity(text)
+                if qty:
+                    state["soluong"] = qty
+                    if state["loai"]:
+                        send_message(sender, "Anh/chị gửi giúp em HỌ TÊN + ĐỊA CHỈ + SĐT để em chốt đơn ạ 🚀")
                         continue
 
-                # Nếu chưa có loại
-                if not state["loai"]:
-                    send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
-                    continue
+                phone = detect_phone(text)
+                if phone:
+                    state["phone"] = phone
 
-                # Nếu đã có loại + số lượng nhưng thiếu thông tin giao hàng
-                if state["loai"] and state["soluong"]:
+                address = detect_address(text)
+                if address:
+                    state["address"] = address
 
-                    if not state["name"]:
-                        name = detect_name(text)
-                        if name:
-                            state["name"] = name
-                        else:
-                            send_message(sender, "Anh/chị gửi giúp em họ tên ạ?")
-                            continue
+                name = detect_name(text)
+                if name:
+                    state["name"] = name
 
-                    if not state["phone"]:
-                        phone = detect_phone(text)
-                        if phone:
-                            state["phone"] = phone
-                        else:
-                            send_message(sender, "Anh/chị gửi giúp em số điện thoại ạ?")
-                            continue
-
-                    if not state["address"]:
-                        address = detect_address(text)
-                        if address:
-                            state["address"] = address
-                        else:
-                            send_message(sender, "Anh/chị gửi giúp em địa chỉ cụ thể ạ?")
-                            continue
-
-                # ===== CHỐT ĐƠN =====
-                if all([
-                    state["loai"],
-                    state["soluong"],
-                    state["phone"],
-                    state["address"],
-                    state["name"]
-                ]):
-
+                # ===== CHỐT ĐƠN NGAY KHI ĐỦ =====
+                if state["loai"] and state["soluong"] and state["phone"] and state["address"] and state["name"]:
                     total, ship = calculate_total(state["loai"], state["soluong"])
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
-                    send_message(sender,
-                        f"🎉 Cảm ơn anh/chị {state['name']} đã tin tưởng shop Quang Anh của chúng tôi ❤️\n\n"
+                    send_message(
+                        sender,
+                        f"🎉 CẢM ƠN ANH/CHỊ {state['name']} ĐÃ TIN TƯỞNG SHOP QUANG ANH 🎉\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
-                        f"Tổng: {total:,}đ\n\n"
-                        "Đơn sẽ được giao trong 2-4 ngày 🚚"
+                        f"Tổng: {total:,}đ\n"
+                        "Đơn sẽ được giao trong 2-4 ngày tùy khu vực 🚚"
                     )
 
                     order_row = [
@@ -253,21 +255,23 @@ def webhook():
                     send_telegram(
                         f"🔥 ĐƠN MỚI 🔥\n"
                         f"Tên: {state['name']}\n"
-                        f"Loại: {state['loai']}\n"
-                        f"Số lượng: {state['soluong']} lạng\n"
+                        f"{state['soluong']} lạng {state['loai']}\n"
                         f"Tổng: {total:,}đ\n"
                         f"SĐT: {state['phone']}\n"
                         f"Địa chỉ: {state['address']}"
                     )
 
                     user_data[sender] = {
-                        "intro_sent": True,
                         "loai": None,
                         "soluong": None,
                         "phone": None,
                         "address": None,
-                        "name": None
+                        "name": None,
+                        "intro_sent": True
                     }
+                    continue
+
+                send_message(sender, ai_reply(text))
 
     return "OK", 200
 
