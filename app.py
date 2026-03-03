@@ -148,35 +148,6 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            # ===== COMMENT SECTION =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        value = change["value"]
-                        if value.get("item") == "comment":
-                            comment_id = value["comment_id"]
-                            sender_id = value["from"]["id"]
-                            text = value.get("message", "").lower()
-
-                            price_reply = (
-                                "Giá:\n"
-                                "• Nhẹ 120k\n"
-                                "• Vừa 150k\n"
-                                "• Nặng 180k\n"
-                                "Từ 3 lạng FREE SHIP 🚀\n"
-                                "Em đã inbox anh/chị để tư vấn chi tiết ạ."
-                            )
-
-                            if any(k in text for k in ["giá", "bao nhiêu", "mấy", "lạng", "nặng", "nhẹ"]):
-                                reply_comment(comment_id, price_reply)
-                                send_message(sender_id,
-                                    "Em gửi anh/chị bảng giá chi tiết:\n"
-                                    "• Nhẹ 120k\n"
-                                    "• Vừa 150k\n"
-                                    "• Nặng 180k\n"
-                                    "Từ 3 lạng FREE SHIP 🚀\n"
-                                    "Anh/chị muốn lấy bao nhiêu lạng ạ?")
-            # ===== INBOX SECTION =====
             if "messaging" not in entry:
                 continue
 
@@ -192,20 +163,37 @@ def webhook():
 
                 state = user_data[sender]
 
-                if "giá" in text or "bao nhiêu" in text:
-                    send_message(sender,
-                        "Giá:\n• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\nTừ 3 lạng FREE SHIP 🚀")
-                    continue
+                # ===== NHẬN DIỆN CHỐT ĐƠN MẠNH =====
+                strong_keywords = [
+                    "đặt hàng", "đặt ngay", "lấy luôn", "chốt",
+                    "ok lấy", "khác bảo có", "tôi muốn lấy", "mình lấy"
+                ]
+
+                kg_match = re.search(r'(\d+)\s*(kg|ký)', text)
+                lang_match = re.search(r'(\d+)\s*(lạng|lang)', text)
+
+                if any(k in text for k in strong_keywords) or kg_match or lang_match:
+
+                    if kg_match:
+                        qty = int(kg_match.group(1)) * 10
+                    elif lang_match:
+                        qty = int(lang_match.group(1))
+                    else:
+                        qty = detect_quantity(text)
+
+                    if not state["loai"]:
+                        send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
+                        continue
+
+                    if qty:
+                        state["soluong"] = qty
+                        send_message(sender,
+                            "Anh/chị gửi giúp em địa chỉ + SĐT để em lên đơn và ship nhanh nhất ạ 🚀")
+                        continue
 
                 if text in PRICE:
                     state["loai"] = text
                     send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                    continue
-
-                qty = detect_quantity(text)
-                if qty and state["loai"]:
-                    state["soluong"] = qty
-                    send_message(sender, "Anh/chị gửi địa chỉ + SĐT giúp em ạ.")
                     continue
 
                 phone = detect_phone(text)
@@ -225,7 +213,7 @@ def webhook():
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n"
-                        "Bên em sẽ gọi xác nhận.")
+                        "Bên em sẽ ship đến anh/chị nhanh nhất có thể 🚀")
 
                     order_row = [
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
