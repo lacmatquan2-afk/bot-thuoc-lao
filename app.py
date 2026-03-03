@@ -2,6 +2,7 @@ import os
 import requests
 import re
 import csv
+import json
 from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -37,7 +38,7 @@ INTRO_MESSAGE = (
     "Từ 3 lạng FREE SHIP 🚀\n"
 )
 
-# ================== SEND FB MESSAGE ==================
+# ================== SEND FB ==================
 def send_message(uid, text):
     if not PAGE_ACCESS_TOKEN:
         return
@@ -45,16 +46,6 @@ def send_message(uid, text):
     requests.post(url, json={
         "recipient": {"id": uid},
         "message": {"text": text}
-    })
-
-# ================== REPLY COMMENT ==================
-def reply_comment(comment_id, message):
-    if not PAGE_ACCESS_TOKEN:
-        return
-    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
-    requests.post(url, data={
-        "message": message,
-        "access_token": PAGE_ACCESS_TOKEN
     })
 
 # ================== TELEGRAM ==================
@@ -83,22 +74,19 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
-# ================== DETECT ==================
+# ================== REGEX DETECT ==================
 def detect_quantity(text):
-    kg_match = re.search(r'(\d+)\s*(kg|ký)', text)
-    lang_match = re.search(r'(\d+)\s*(lạng|lang)', text)
-
-    if kg_match:
-        return int(kg_match.group(1)) * 10
-
-    if lang_match:
-        return int(lang_match.group(1))
-
+    kg = re.search(r'(\d+)\s*(kg|ký)', text)
+    lang = re.search(r'(\d+)\s*(lạng|lang)', text)
+    if kg:
+        return int(kg.group(1)) * 10
+    if lang:
+        return int(lang.group(1))
     return None
 
 def detect_phone(text):
-    match = re.search(r'0\d{9,10}', text)
-    return match.group() if match else None
+    m = re.search(r'0\d{9,10}', text)
+    return m.group() if m else None
 
 def detect_address(text):
     keywords = ["đường", "xã", "huyện", "tỉnh", "thôn", "phường", "quận"]
@@ -106,15 +94,19 @@ def detect_address(text):
         return text
     return None
 
-def detect_name(text):
-    if len(text.split()) >= 2 and not detect_phone(text) and not detect_quantity(text):
-        return text
+def detect_loai(text):
+    if "nhẹ" in text or "120" in text:
+        return "nhẹ"
+    if "vừa" in text or "150" in text:
+        return "vừa"
+    if "nặng" in text or "180" in text:
+        return "nặng"
     return None
 
-# ================== AI ==================
-def ai_reply(text):
+# ================== AI PARSE ==================
+def ai_extract_info(text):
     if not client:
-        return "Anh/chị cho em xin loại và số lượng để em chốt đơn ạ 🚀"
+        return {}
 
     try:
         res = client.chat.completions.create(
@@ -123,26 +115,33 @@ def ai_reply(text):
                 {
                     "role": "system",
                     "content": """
-Bạn là nhân viên bán thuốc lào.
-Nếu khách hỏi ngoài lề → trả lời ngắn gọn rồi dẫn về hỏi loại và số lượng.
-Nếu có ý định mua → yêu cầu họ tên + địa chỉ + SĐT để chốt.
+Trích xuất thông tin đơn hàng từ tin nhắn.
+Trả về JSON:
+{
+"name": "...",
+"phone": "...",
+"address": "...",
+"quantity": số,
+"type": "nhẹ/vừa/nặng"
+}
+Nếu không có thì để null.
 """
                 },
                 {"role": "user", "content": text}
             ]
         )
-        return res.choices[0].message.content
+        content = res.choices[0].message.content
+        return json.loads(content)
     except:
-        return "Anh/chị cho em xin loại và số lượng để em chốt đơn ạ 🚀"
+        return {}
 
 # ================== AUTO POST ==================
 def auto_post():
     if not PAGE_ID or not PAGE_ACCESS_TOKEN:
         return
     url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
-    message = INTRO_MESSAGE
     requests.post(url, data={
-        "message": message,
+        "message": INTRO_MESSAGE,
         "access_token": PAGE_ACCESS_TOKEN
     })
 
@@ -158,23 +157,6 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            # ===== COMMENT =====
-            if "changes" in entry:
-                for change in entry["changes"]:
-                    if change["field"] == "feed":
-                        comment = change["value"]
-                        if "comment_id" in comment:
-                            comment_id = comment["comment_id"]
-                            message = comment.get("message", "").lower()
-
-                            reply_comment(
-                                comment_id,
-                                "🔥 Thuốc lào Quảng Định\n"
-                                "• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\n"
-                                "Anh/chị inbox em loại và số lượng để chốt đơn nhé 🚀"
-                            )
-
-            # ===== INBOX =====
             if "messaging" not in entry:
                 continue
 
@@ -201,40 +183,50 @@ def webhook():
                     send_message(sender, INTRO_MESSAGE)
                     state["intro_sent"] = True
 
-                # ===== NHẬN DIỆN LOẠI =====
-                for loai in PRICE:
-                    if loai in text:
-                        state["loai"] = loai
-                        send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
-                        break
-
+                # ===== REGEX NHẬN DIỆN =====
+                loai = detect_loai(text)
                 qty = detect_quantity(text)
+                phone = detect_phone(text)
+                address = detect_address(text)
+
+                if loai:
+                    state["loai"] = loai
+
                 if qty:
                     state["soluong"] = qty
-                    if state["loai"]:
-                        send_message(sender, "Anh/chị gửi giúp em HỌ TÊN + ĐỊA CHỈ + SĐT để em chốt đơn ạ 🚀")
-                        continue
 
-                phone = detect_phone(text)
                 if phone:
                     state["phone"] = phone
 
-                address = detect_address(text)
                 if address:
                     state["address"] = address
 
-                name = detect_name(text)
-                if name:
-                    state["name"] = name
+                # ===== AI NHẬN DIỆN BỔ SUNG =====
+                ai_data = ai_extract_info(text)
 
-                # ===== CHỐT ĐƠN NGAY KHI ĐỦ =====
-                if state["loai"] and state["soluong"] and state["phone"] and state["address"] and state["name"]:
+                if ai_data.get("type"):
+                    state["loai"] = ai_data["type"]
+
+                if ai_data.get("quantity"):
+                    state["soluong"] = ai_data["quantity"]
+
+                if ai_data.get("phone"):
+                    state["phone"] = ai_data["phone"]
+
+                if ai_data.get("address"):
+                    state["address"] = ai_data["address"]
+
+                if ai_data.get("name"):
+                    state["name"] = ai_data["name"]
+
+                # ===== CHỐT ĐƠN =====
+                if state["loai"] and state["soluong"] and state["phone"] and state["address"]:
                     total, ship = calculate_total(state["loai"], state["soluong"])
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
                     send_message(
                         sender,
-                        f"🎉 CẢM ƠN ANH/CHỊ {state['name']} ĐÃ TIN TƯỞNG SHOP QUANG ANH 🎉\n"
+                        f"🎉 CẢM ƠN ANH/CHỊ ĐÃ TIN TƯỞNG SHOP QUANG ANH 🎉\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
                         f"Tổng: {total:,}đ\n"
@@ -254,7 +246,6 @@ def webhook():
 
                     send_telegram(
                         f"🔥 ĐƠN MỚI 🔥\n"
-                        f"Tên: {state['name']}\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"Tổng: {total:,}đ\n"
                         f"SĐT: {state['phone']}\n"
@@ -271,7 +262,13 @@ def webhook():
                     }
                     continue
 
-                send_message(sender, ai_reply(text))
+                # Nếu chưa đủ → gợi ý tiếp
+                if not state["loai"]:
+                    send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
+                elif not state["soluong"]:
+                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                else:
+                    send_message(sender, "Anh/chị gửi giúp em HỌ TÊN + ĐỊA CHỈ + SĐT để em chốt đơn ạ 🚀")
 
     return "OK", 200
 
