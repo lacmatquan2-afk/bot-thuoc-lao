@@ -27,6 +27,12 @@ FREE_SHIP_FROM = 3
 user_data = {}
 CSV_FILE = "orders.csv"
 
+INTRO_MESSAGE = (
+    "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
+    "Êm – Say – Không hồ – Không tẩm – Không pha trộn\n"
+    "Cam kết thuốc sạch chuẩn gốc Quảng Định 🚀\n\n"
+)
+
 # ================== SEND FB MESSAGE ==================
 def send_message(uid, text):
     if not PAGE_ACCESS_TOKEN:
@@ -113,15 +119,15 @@ def ai_reply(text):
                     "role": "system",
                     "content": """
 Bạn là nhân viên bán thuốc lào Quảng Định.
+Luôn kéo khách về trọng tâm mua hàng và chốt đơn.
 
 Giá:
 - Nhẹ 120k
 - Vừa 150k
 - Nặng 180k
 
-Nếu khách hỏi giá → báo đúng giá.
-Nếu khách nói có, đặt, lấy, chốt hoặc có số lượng
-→ yêu cầu gửi địa chỉ + SĐT để chốt.
+Nếu khách hỏi ngoài lề → trả lời ngắn gọn rồi dẫn về hỏi mua loại nào và bao nhiêu lạng.
+Nếu khách có ý định mua → yêu cầu gửi địa chỉ + SĐT để chốt đơn.
 """
                 },
                 {"role": "user", "content": text}
@@ -131,27 +137,6 @@ Nếu khách nói có, đặt, lấy, chốt hoặc có số lượng
     except:
         return "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?"
 
-# ================== AUTO POST ==================
-def auto_post():
-    if not PAGE_ID or not PAGE_ACCESS_TOKEN:
-        return
-    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
-    message = (
-        "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-        "• Nhẹ 120k\n"
-        "• Vừa 150k\n"
-        "• Nặng 180k\n"
-        "Từ 3 lạng FREE SHIP 🚀"
-    )
-    requests.post(url, data={
-        "message": message,
-        "access_token": PAGE_ACCESS_TOKEN
-    })
-
-scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
-scheduler.add_job(auto_post, "cron", hour=8, minute=0)
-scheduler.start()
-
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -160,29 +145,35 @@ def webhook():
     if data.get("object") == "page":
         for entry in data["entry"]:
 
-            # ===== XỬ LÝ COMMENT =====
+            # ===== COMMENT =====
             if "changes" in entry:
                 for change in entry["changes"]:
                     if change["field"] == "feed":
                         comment = change["value"]
                         if "comment_id" in comment:
                             comment_id = comment["comment_id"]
-                            user_id = comment.get("from", {}).get("id")
                             message = comment.get("message", "").lower()
 
                             qty = detect_quantity(message)
 
-                            # Trả lời comment
                             if qty:
-                                reply_comment(comment_id, "Inbox em để chốt đơn và nhận báo giá chi tiết nhé 🚀")
+                                total = 150000 * qty
+                                reply_comment(comment_id,
+                                    f"{INTRO_MESSAGE}"
+                                    f"{qty} lạng\n"
+                                    f"Tổng: {total:,}đ\n"
+                                    "Anh/chị inbox gửi giúp em địa chỉ + SĐT để chốt đơn ạ 🚀"
+                                )
                             else:
-                                reply_comment(comment_id, "Anh/chị quan tâm inbox em để được tư vấn và báo giá ạ 🚀")
+                                reply_comment(comment_id,
+                                    f"{INTRO_MESSAGE}"
+                                    "• Nhẹ 120k\n"
+                                    "• Vừa 150k\n"
+                                    "• Nặng 180k\n"
+                                    "Anh/chị cần loại nào và bao nhiêu lạng ạ?"
+                                )
 
-                            # Tự động inbox khách
-                            if user_id:
-                                send_message(user_id, "Em đã inbox mình rồi ạ, mình check tin nhắn giúp em nhé 🚀")
-
-            # ===== XỬ LÝ INBOX (GIỮ NGUYÊN LOGIC CŨ) =====
+            # ===== INBOX =====
             if "messaging" not in entry:
                 continue
 
@@ -195,19 +186,29 @@ def webhook():
 
                 if sender not in user_data:
                     user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
+                    send_message(sender, INTRO_MESSAGE)
 
                 state = user_data[sender]
 
-                qty = detect_quantity(text)
-
-                if text in PRICE:
-                    state["loai"] = text
+                # Nếu khách nhắn giá 150k
+                if "150" in text:
+                    state["loai"] = "vừa"
                     send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
                     continue
 
+                if "120" in text:
+                    state["loai"] = "nhẹ"
+                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                    continue
+
+                if "180" in text:
+                    state["loai"] = "nặng"
+                    send_message(sender, "Anh/chị lấy bao nhiêu lạng ạ?")
+                    continue
+
+                qty = detect_quantity(text)
                 if qty:
                     state["soluong"] = qty
-
                     if not state["loai"]:
                         send_message(sender, "Anh/chị muốn loại nhẹ, vừa hay nặng ạ?")
                         continue
@@ -235,11 +236,11 @@ def webhook():
                     ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
                     send_message(sender,
-                        f"XÁC NHẬN ĐƠN\n"
+                        f"Em cảm ơn anh/chị đã tin tưởng ủng hộ ❤️\n"
                         f"{state['soluong']} lạng {state['loai']}\n"
                         f"{ship_text}\n"
-                        f"Tổng: {total:,}đ\n"
-                        "Bên em sẽ ship nhanh nhất 🚀")
+                        f"Tổng: {total:,}đ\n\n"
+                        "Đơn sẽ được giao trong 2-4 ngày tùy khu vực 🚚")
 
                     order_row = [
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -251,14 +252,7 @@ def webhook():
                     ]
 
                     save_order(order_row)
-
-                    send_telegram(
-                        f"🔥 ĐƠN MỚI 🔥\n"
-                        f"{state['soluong']} lạng {state['loai']}\n"
-                        f"Tổng: {total:,}đ\n"
-                        f"SĐT: {state['phone']}\n"
-                        f"Địa chỉ: {state['address']}"
-                    )
+                    send_telegram(f"🔥 ĐƠN MỚI 🔥\n{order_row}")
 
                     user_data[sender] = {"loai": None, "soluong": None, "phone": None, "address": None}
                     continue
