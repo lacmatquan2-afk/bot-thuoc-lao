@@ -30,20 +30,6 @@ FREE_SHIP_FROM = 3
 user_data = {}
 CSV_FILE = "orders.csv"
 
-INTRO_MESSAGE = (
-    "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-    "• Nhẹ 120k\n"
-    "• Vừa 150k\n"
-    "• Nặng 180k\n"
-    "Từ 3 lạng FREE SHIP 🚀\n\n"
-    "Anh cho shop xin:\n"
-    "- Loại (nhẹ/vừa/nặng hoặc 120k/150k/180k)\n"
-    "- Số lượng (lạng/kg)\n"
-    "- Họ tên\n"
-    "- SĐT\n"
-    "- Địa chỉ nhận hàng\n"
-)
-
 # ================== AUTO POST ==================
 
 POST_IMAGES = [
@@ -80,7 +66,7 @@ scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
 scheduler.add_job(auto_post, "cron", hour=8, minute=0)
 scheduler.start()
 
-# ===== Anti Sleep Thread =====
+# ===== Anti Sleep =====
 def keep_alive():
     while True:
         try:
@@ -127,11 +113,22 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
-# ================== REGEX NÂNG CẤP ==================
+# ================== DETECT ==================
+
+def is_price_question(text):
+    keywords = [
+        "bao nhiêu tiền",
+        "nhiu tiền",
+        "giá sao",
+        "giá",
+        "bao nhiêu 1 lạng",
+        "1 lạng bao nhiêu"
+    ]
+    return any(k in text for k in keywords)
+
 def detect_quantity(text):
     kg = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)', text)
     lang = re.search(r'(\d+)\s*(lạng|lang)', text)
-
     if kg:
         return int(float(kg.group(1)) * 10)
     if lang:
@@ -143,57 +140,33 @@ def detect_phone(text):
     return m.group() if m else None
 
 def detect_name(text):
-    match = re.search(r'(?:tên|toi ten|tôi tên|mình tên)\s+([a-zA-ZÀ-ỹ\s]+)', text)
-    if match:
-        return match.group(1).strip()
+    patterns = [
+        r"(?:tên|toi ten|tôi tên|mình tên|mình là|toi la|tôi là)\s+([a-zA-ZÀ-ỹ\s]+)"
+    ]
+    for p in patterns:
+        match = re.search(p, text)
+        if match:
+            return match.group(1).strip().title()
+
+    if 1 <= len(text.split()) <= 3 and text.replace(" ", "").isalpha():
+        return text.strip().title()
     return None
 
 def detect_address(text):
-    if len(text) > 10 and any(x in text for x in ["đường", "xã", "huyện", "tỉnh", "quận"]):
+    if len(text) > 15:
+        return text
+    if re.search(r'\d+.*(đường|xã|huyện|tỉnh|quận|thôn|ấp)', text):
         return text
     return None
 
 def detect_loai(text):
-    if "120" in text or "120k" in text:
+    if "120" in text or "nhẹ" in text:
         return "nhẹ"
-    if "150" in text or "150k" in text:
+    if "150" in text or "vừa" in text:
         return "vừa"
-    if "180" in text or "180k" in text:
-        return "nặng"
-    if "nhẹ" in text:
-        return "nhẹ"
-    if "vừa" in text:
-        return "vừa"
-    if "nặng" in text:
+    if "180" in text or "nặng" in text:
         return "nặng"
     return None
-
-# ===== OpenAI extract phụ trợ =====
-def ai_extract_extra(text):
-    if not client:
-        return {}
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0,
-            messages=[
-                {
-                    "role": "system",
-                    "content": """Trích xuất JSON:
-{
-"name": "...",
-"phone": "...",
-"address": "...",
-"quantity": số (lạng),
-"type": "nhẹ/vừa/nặng"
-}"""
-                },
-                {"role": "user", "content": text}
-            ]
-        )
-        return json.loads(res.choices[0].message.content)
-    except:
-        return {}
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -202,10 +175,7 @@ def webhook():
 
     if data.get("object") == "page":
         for entry in data["entry"]:
-            if "messaging" not in entry:
-                continue
-
-            for event in entry["messaging"]:
+            for event in entry.get("messaging", []):
                 if "message" not in event:
                     continue
 
@@ -219,68 +189,98 @@ def webhook():
                         "phone": None,
                         "address": None,
                         "name": None,
-                        "intro_sent": False
+                        "intro_sent": False,
+                        "last_reply": ""
                     }
 
                 state = user_data[sender]
 
+                # ===== CHÀO 1 LẦN =====
                 if not state["intro_sent"]:
-                    send_message(sender, INTRO_MESSAGE)
+                    welcome = (
+                        "Chào bạn đã đến với Thuốc Lào Quảng Định của chúng tôi 👋\n"
+                        "• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\n"
+                        "Từ 3 lạng FREE SHIP 🚀"
+                    )
+                    send_message(sender, welcome)
                     state["intro_sent"] = True
+                    state["last_reply"] = welcome
+                    return "OK", 200
 
+                # ===== HỎI GIÁ =====
+                if is_price_question(text):
+                    reply = (
+                        "Giá hiện tại:\n"
+                        "• Nhẹ: 120k / lạng\n"
+                        "• Vừa: 150k / lạng\n"
+                        "• Nặng: 180k / lạng\n"
+                        "Từ 3 lạng FREE SHIP 🚀"
+                    )
+                    if state["last_reply"] != reply:
+                        send_message(sender, reply)
+                        state["last_reply"] = reply
+                    return "OK", 200
+
+                # ===== NHẬN DIỆN INFO =====
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
 
-                # AI bổ trợ nếu thiếu
-                ai_data = ai_extract_extra(text)
-                if ai_data.get("type"):
-                    state["loai"] = ai_data["type"]
-                if ai_data.get("quantity"):
-                    state["soluong"] = ai_data["quantity"]
-                if ai_data.get("phone"):
-                    state["phone"] = ai_data["phone"]
-                if ai_data.get("address"):
-                    state["address"] = ai_data["address"]
-                if ai_data.get("name"):
-                    state["name"] = ai_data["name"]
+                # ===== THIẾU INFO → HỎI LẠI =====
+                if not state["loai"]:
+                    send_message(sender, "Anh lấy loại nhẹ, vừa hay nặng ạ?")
+                    return "OK", 200
+                if not state["soluong"]:
+                    send_message(sender, "Anh lấy bao nhiêu lạng hoặc kg ạ?")
+                    return "OK", 200
+                if not state["name"]:
+                    send_message(sender, "Anh cho shop xin họ tên ạ?")
+                    return "OK", 200
+                if not state["phone"]:
+                    send_message(sender, "Anh cho shop xin số điện thoại nhận hàng ạ?")
+                    return "OK", 200
+                if not state["address"]:
+                    send_message(sender, "Anh cho shop xin địa chỉ nhận hàng chi tiết ạ?")
+                    return "OK", 200
 
-                if state["loai"] and state["soluong"] and state["phone"] and state["address"]:
-                    total, ship = calculate_total(state["loai"], state["soluong"])
-                    ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
+                # ===== ĐỦ INFO → TẠO ĐƠN =====
+                total, ship = calculate_total(state["loai"], state["soluong"])
+                ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
-                    confirm_text = (
-                        f"🎉 XÁC NHẬN ĐƠN 🎉\n"
-                        f"Tên: {state['name']}\n"
-                        f"{state['soluong']} lạng {state['loai']}\n"
-                        f"{ship_text}\n"
-                        f"Tổng: {total:,}đ\n"
-                        f"Giao 2-4 ngày 🚚"
-                    )
+                confirm_text = (
+                    f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+                    f"Tên: {state['name']}\n"
+                    f"{state['soluong']} lạng {state['loai']}\n"
+                    f"{ship_text}\n"
+                    f"Tổng: {total:,}đ\n"
+                    f"Giao 2-4 ngày 🚚"
+                )
 
-                    send_message(sender, confirm_text)
+                send_message(sender, confirm_text)
 
-                    save_order([
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        state["loai"],
-                        state["soluong"],
-                        total,
-                        state["phone"],
-                        state["address"]
-                    ])
+                save_order([
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    state["loai"],
+                    state["soluong"],
+                    total,
+                    state["phone"],
+                    state["address"]
+                ])
 
-                    send_telegram(confirm_text)
+                send_telegram(confirm_text)
 
-                    user_data[sender] = {
-                        "loai": None,
-                        "soluong": None,
-                        "phone": None,
-                        "address": None,
-                        "name": None,
-                        "intro_sent": True
-                    }
+                # reset nhưng giữ intro
+                user_data[sender] = {
+                    "loai": None,
+                    "soluong": None,
+                    "phone": None,
+                    "address": None,
+                    "name": None,
+                    "intro_sent": True,
+                    "last_reply": ""
+                }
 
     return "OK", 200
 
