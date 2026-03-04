@@ -86,6 +86,13 @@ def send_message(uid, text):
         "message": {"text": text}
     })
 
+def reply_comment(comment_id, text):
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+    requests.post(url, data={
+        "message": text,
+        "access_token": PAGE_ACCESS_TOKEN
+    })
+
 # ================== TELEGRAM ==================
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -112,16 +119,26 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
+# ================== OPENAI TRẢ LỜI NGOÀI LUỒNG ==================
+def ask_openai(user_text):
+    if not client:
+        return None
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Bạn là nhân viên bán thuốc lào, trả lời ngắn gọn, lịch sự."},
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=200
+        )
+        return response.choices[0].message.content
+    except:
+        return None
+
 # ================== DETECT ==================
 def is_price_question(text):
-    keywords = [
-        "bao nhiêu tiền",
-        "nhiu tiền",
-        "giá sao",
-        "giá",
-        "bao nhiêu 1 lạng",
-        "1 lạng bao nhiêu"
-    ]
+    keywords = ["bao nhiêu tiền","nhiu tiền","giá sao","giá"]
     return any(k in text for k in keywords)
 
 def detect_quantity(text):
@@ -138,22 +155,12 @@ def detect_phone(text):
     return m.group() if m else None
 
 def detect_name(text):
-    patterns = [
-        r"(?:tên|toi ten|tôi tên|mình tên|mình là|toi la|tôi là)\s+([a-zA-ZÀ-ỹ\s]+)"
-    ]
-    for p in patterns:
-        match = re.search(p, text)
-        if match:
-            return match.group(1).strip().title()
-
     if 1 <= len(text.split()) <= 3 and text.replace(" ", "").isalpha():
         return text.strip().title()
     return None
 
 def detect_address(text):
     if len(text) > 15:
-        return text
-    if re.search(r'\d+.*(đường|xã|huyện|tỉnh|quận|thôn|ấp)', text):
         return text
     return None
 
@@ -171,8 +178,23 @@ def detect_loai(text):
 def webhook():
     data = request.get_json()
 
+    # ===== XỬ LÝ COMMENT =====
     if data.get("object") == "page":
         for entry in data["entry"]:
+
+            # COMMENT
+            if "changes" in entry:
+                for change in entry["changes"]:
+                    if change["field"] == "feed":
+                        value = change["value"]
+                        if value.get("item") == "comment":
+                            comment_text = value.get("message","")
+                            comment_id = value.get("comment_id")
+                            ai_reply = ask_openai(comment_text)
+                            if ai_reply:
+                                reply_comment(comment_id, ai_reply)
+
+            # INBOX
             for event in entry.get("messaging", []):
                 if "message" not in event:
                     continue
@@ -194,76 +216,48 @@ def webhook():
 
                 state = user_data[sender]
 
-                # ===== CHỐNG TRẢ LỜI TRÙNG =====
                 if state.get("order_done"):
                     return "OK", 200
 
-                # ===== CHÀO 1 LẦN =====
+                # CHÀO
                 if not state["intro_sent"]:
                     welcome = (
-                        "Chào bạn đã đến với Thuốc Lào Quảng Định của chúng tôi 👋\n"
+                        "Chào bạn đã đến với Thuốc Lào Quảng Định 👋\n"
                         "• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\n"
                         "Từ 3 lạng FREE SHIP 🚀"
                     )
                     send_message(sender, welcome)
                     state["intro_sent"] = True
-                    state["last_reply"] = welcome
                     return "OK", 200
 
-                # ===== HỎI GIÁ =====
-                if is_price_question(text):
-                    reply = (
-                        "Giá hiện tại:\n"
-                        "• Nhẹ: 120k / lạng\n"
-                        "• Vừa: 150k / lạng\n"
-                        "• Nặng: 180k / lạng\n"
-                        "Từ 3 lạng FREE SHIP 🚀"
-                    )
-                    if state["last_reply"] != reply:
-                        send_message(sender, reply)
-                        state["last_reply"] = reply
-                    return "OK", 200
-
-                # ===== NHẬN DIỆN INFO =====
+                # Detect thông tin
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
 
-                # ===== THIẾU INFO → HỎI LẠI =====
-                if not state["loai"]:
-                    send_message(sender, "Anh lấy loại nhẹ, vừa hay nặng ạ?")
-                    return "OK", 200
-                if not state["soluong"]:
-                    send_message(sender, "Anh lấy bao nhiêu lạng hoặc kg ạ?")
-                    return "OK", 200
-                if not state["name"]:
-                    send_message(sender, "Anh cho shop xin họ tên ạ?")
-                    return "OK", 200
-                if not state["phone"]:
-                    send_message(sender, "Anh cho shop xin số điện thoại nhận hàng ạ?")
-                    return "OK", 200
-                if not state["address"]:
-                    send_message(sender, "Anh cho shop xin địa chỉ nhận hàng chi tiết ạ?")
+                # Nếu chưa đủ info → dùng OpenAI trả lời
+                if not all([state["loai"], state["soluong"], state["phone"], state["address"], state["name"]]):
+                    ai_reply = ask_openai(text)
+                    if ai_reply:
+                        send_message(sender, ai_reply)
                     return "OK", 200
 
-                # ===== ĐỦ INFO → CHỐT ĐƠN =====
+                # ĐỦ INFO → CHỐT
                 total, ship = calculate_total(state["loai"], state["soluong"])
-                ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
-
                 confirm_text = (
-                    f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+                    f"🎉 CHỐT ĐƠN 🎉\n"
                     f"Tên: {state['name']}\n"
                     f"SĐT: {state['phone']}\n"
                     f"Địa chỉ: {state['address']}\n"
                     f"{state['soluong']} lạng {state['loai']}\n"
-                    f"{ship_text}\n"
                     f"Tổng: {total:,}đ\n"
-                    f"Giao 2-4 ngày 🚚"
+                    f"Cảm ơn anh/chị đã ủng hộ 🙏"
                 )
 
                 send_message(sender, confirm_text)
+                send_telegram(confirm_text)
 
                 save_order([
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -275,26 +269,11 @@ def webhook():
                     state["address"]
                 ])
 
-                send_telegram(confirm_text)
-
-                # đánh dấu đã chốt để không gửi trùng
                 state["order_done"] = True
-
-                # reset nhưng giữ intro
-                user_data[sender] = {
-                    "loai": None,
-                    "soluong": None,
-                    "phone": None,
-                    "address": None,
-                    "name": None,
-                    "intro_sent": True,
-                    "last_reply": "",
-                    "order_done": False
-                }
 
     return "OK", 200
 
-# ================== VERIFY ==================
+
 @app.route("/webhook", methods=["GET"])
 def verify():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
