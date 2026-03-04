@@ -213,7 +213,73 @@ def webhook():
                 state["name"] = detect_name(text) or state["name"]
 
                 # ===== KIỂM TRA ĐỦ INFO =====
-                if all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
+if all([state["loai"], state["soluong"], state["phone"], state["address"], state["name"]]):
+
+    # Chuẩn hóa lại loại và giá
+    loai = state["loai"]
+    gia_mot_lang = PRICE.get(loai, 0)
+
+    # Nhận diện lại theo giá
+    if gia_mot_lang == 120000:
+        loai_text = "Loại 1 (120k/lạng)"
+    elif gia_mot_lang == 150000:
+        loai_text = "Loại 2 (150k/lạng)"
+    elif gia_mot_lang == 180000:
+        loai_text = "Loại 3 (180k/lạng)"
+    else:
+        loai_text = loai
+
+    total, ship = calculate_total(loai, state["soluong"])
+    ship_text = "Miễn phí ship" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
+
+    # ===== Nội dung chốt đơn gửi khách =====
+    confirm = (
+        f"🎉 CHỐT ĐƠN THÀNH CÔNG 🎉\n\n"
+        f"Họ tên: {state['name']}\n"
+        f"SĐT: {state['phone']}\n"
+        f"Địa chỉ: {state['address']}\n\n"
+        f"Sản phẩm: {state['soluong']} lạng {loai_text}\n"
+        f"{ship_text}\n"
+        f"Tổng thanh toán: {total:,}đ\n\n"
+        f"✅ Bên em sẽ liên hệ giao hàng sớm nhất.\n"
+        f"Cảm ơn anh/chị đã ủng hộ Thuốc Lào Quảng Định 🙏"
+    )
+
+    send_message(sender, confirm)
+
+    # ===== Lưu CSV =====
+    save_order([
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        loai_text,
+        state["soluong"],
+        total,
+        state["name"],
+        state["phone"],
+        state["address"]
+    ])
+
+    # ===== Gửi Telegram đầy đủ thông tin =====
+    telegram_text = (
+        f"🚨 ĐƠN HÀNG MỚI 🚨\n\n"
+        f"Họ tên: {state['name']}\n"
+        f"SĐT: {state['phone']}\n"
+        f"Địa chỉ: {state['address']}\n\n"
+        f"Sản phẩm: {state['soluong']} lạng {loai_text}\n"
+        f"Phí ship: {ship_text}\n"
+        f"Tổng tiền: {total:,}đ"
+    )
+
+    send_telegram(telegram_text)
+
+    # Reset trạng thái sau khi chốt
+    user_data[sender] = {
+        "loai": None,
+        "soluong": None,
+        "phone": None,
+        "address": None,
+        "name": None,
+        "intro_sent": True
+    }
 
                     total, ship = calculate_total(state["loai"],state["soluong"])
                     ship_text = "Miễn phí ship" if ship==0 else f"Ship {SHIP_FEE:,}đ"
@@ -269,3 +335,4 @@ def home():
 if __name__=="__main__":
     port=int(os.environ.get("PORT",10000))
     app.run(host="0.0.0.0",port=port)
+
