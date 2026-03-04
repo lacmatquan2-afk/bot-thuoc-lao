@@ -2,6 +2,7 @@ import os
 import requests
 import re
 import csv
+import json
 import random
 from datetime import datetime
 from flask import Flask, request
@@ -22,18 +23,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-PRICE = {"loại 1": 120000, "loại 2": 150000, "loại 3": 180000}
-TYPE_MAP = {
-    "120": "loại 1",
-    "150": "loại 2",
-    "180": "loại 3",
-    "nhẹ": "loại 1",
-    "vừa": "loại 2",
-    "nặng": "loại 3",
-    "1": "loại 1",
-    "2": "loại 2",
-    "3": "loại 3",
-}
+PRICE = {"nhẹ": 120000, "vừa": 150000, "nặng": 180000}
 SHIP_FEE = 30000
 FREE_SHIP_FROM = 3
 
@@ -41,27 +31,41 @@ user_data = {}
 CSV_FILE = "orders.csv"
 
 # ================== AUTO POST ==================
+POST_IMAGES = [
+    "https://i.imgur.com/yourimage1.jpg",
+    "https://i.imgur.com/yourimage2.jpg",
+    "https://i.imgur.com/yourimage3.jpg"
+]
+
+def generate_random_post():
+    scarcity = random.randint(15, 40)
+    content = (
+        f"🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n\n"
+        f"Hôm nay còn khoảng {scarcity}kg.\n"
+        f"• Nhẹ 120k\n"
+        f"• Vừa 150k\n"
+        f"• Nặng 180k\n"
+        f"Từ 3 lạng FREE SHIP 🚀\n"
+        f"Inbox ngay giữ hàng!"
+    )
+    return content, random.choice(POST_IMAGES)
+
 def auto_post():
     if not PAGE_ACCESS_TOKEN or not PAGE_ID:
         return
-    content = (
-        "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-        "• Loại 1: 120k/lạng\n"
-        "• Loại 2: 150k/lạng\n"
-        "• Loại 3: 180k/lạng\n"
-        "Từ 3 lạng FREE SHIP 🚀"
-    )
-    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
+    message, image_url = generate_random_post()
+    url = f"https://graph.facebook.com/v18.0/{PAGE_ID}/photos"
     requests.post(url, data={
-        "message": content,
+        "url": image_url,
+        "caption": message,
         "access_token": PAGE_ACCESS_TOKEN
     })
 
 scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
-scheduler.add_job(auto_post, "cron", hour=8)
+scheduler.add_job(auto_post, "cron", hour=8, minute=0)
 scheduler.start()
 
-# ================== ANTI SLEEP ==================
+# ===== Anti Sleep =====
 def keep_alive():
     while True:
         try:
@@ -98,7 +102,7 @@ def save_order(order):
     with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["Time","Loai","SoLuong(lạng)","Tong","Ten","SDT","DiaChi"])
+            writer.writerow(["Time", "Loai", "SoLuong(lạng)", "Tong", "Ten", "SDT", "DiaChi"])
         writer.writerow(order)
 
 # ================== CALCULATE ==================
@@ -109,9 +113,16 @@ def calculate_total(loai, soluong):
     return total + SHIP_FEE, SHIP_FEE
 
 # ================== DETECT ==================
+def is_price_question(text):
+    keywords = [
+        "bao nhiêu tiền","nhiu tiền","giá sao","giá",
+        "bao nhiêu 1 lạng","1 lạng bao nhiêu"
+    ]
+    return any(k in text for k in keywords)
+
 def detect_quantity(text):
     kg = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)', text)
-    lang = re.search(r'(\d+)\s*(lạng)', text)
+    lang = re.search(r'(\d+)\s*(lạng|lang)', text)
     if kg:
         return int(float(kg.group(1)) * 10)
     if lang:
@@ -123,47 +134,33 @@ def detect_phone(text):
     return m.group() if m else None
 
 def detect_name(text):
-    match = re.search(r"(?:tên|tôi là|toi la|mình là)\s+([a-zA-ZÀ-ỹ\s]+)", text)
-    if match:
-        return match.group(1).strip().title()
+    patterns = [
+        r"(?:tên|toi ten|tôi tên|mình tên|mình là|toi la|tôi là)\s+([a-zA-ZÀ-ỹ\s]+)"
+    ]
+    for p in patterns:
+        match = re.search(p, text)
+        if match:
+            return match.group(1).strip().title()
+
+    if 1 <= len(text.split()) <= 3 and text.replace(" ", "").isalpha():
+        return text.strip().title()
     return None
 
 def detect_address(text):
-    if len(text) > 15 and any(k in text for k in ["đường","xã","huyện","tỉnh","quận","thôn","ấp"]):
+    if len(text) > 15:
+        return text
+    if re.search(r'\d+.*(đường|xã|huyện|tỉnh|quận|thôn|ấp)', text):
         return text
     return None
 
 def detect_loai(text):
-    for key in TYPE_MAP:
-        if key in text:
-            return TYPE_MAP[key]
+    if "120" in text or "nhẹ" in text:
+        return "nhẹ"
+    if "150" in text or "vừa" in text:
+        return "vừa"
+    if "180" in text or "nặng" in text:
+        return "nặng"
     return None
-
-def is_price_question(text):
-    return any(k in text for k in ["bao nhiêu","giá","nhiu tiền","bao tiền"])
-
-# ================== OPENAI ==================
-def ai_reply(text):
-    if not client:
-        return None
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.7,
-            messages=[
-                {
-                    "role": "system",
-                    "content": """Bạn là nhân viên bán thuốc lào Quảng Định.
-Thuốc êm, say, không hồ, không tẩm, không pha trộn.
-Tư vấn nhiệt tình, chăm sóc khách chu đáo.
-Luôn hướng khách về đặt hàng."""
-                },
-                {"role": "user", "content": text}
-            ]
-        )
-        return res.choices[0].message.content
-    except:
-        return None
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -177,94 +174,120 @@ def webhook():
                     continue
 
                 sender = event["sender"]["id"]
-                text = event["message"].get("text","").lower()
+                text = event["message"].get("text", "").lower()
 
                 if sender not in user_data:
                     user_data[sender] = {
-                        "loai":None,"soluong":None,"phone":None,
-                        "address":None,"name":None,"intro_sent":False
+                        "loai": None,
+                        "soluong": None,
+                        "phone": None,
+                        "address": None,
+                        "name": None,
+                        "intro_sent": False,
+                        "last_reply": ""
                     }
 
                 state = user_data[sender]
 
-                # ===== CHÀO ĐẦU =====
                 if not state["intro_sent"]:
                     welcome = (
-                        "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-                        "• Loại 1: 120k / 1 lạng\n"
-                        "• Loại 2: 150k / 1 lạng\n"
-                        "• Loại 3: 180k / 1 lạng\n"
-                        "Mua từ 3 lạng FREE SHIP 🚀"
+                        "Chào bạn đã đến với Thuốc Lào Quảng Định của chúng tôi 👋\n"
+                        "• Nhẹ 120k\n• Vừa 150k\n• Nặng 180k\n"
+                        "Từ 3 lạng FREE SHIP 🚀"
                     )
                     send_message(sender, welcome)
                     state["intro_sent"] = True
-                    return "OK",200
+                    state["last_reply"] = welcome
+                    return "OK", 200
 
-                # ===== NHẬN DIỆN =====
+                if is_price_question(text):
+                    reply = (
+                        "Giá hiện tại:\n"
+                        "• Nhẹ: 120k / lạng\n"
+                        "• Vừa: 150k / lạng\n"
+                        "• Nặng: 180k / lạng\n"
+                        "Từ 3 lạng FREE SHIP 🚀"
+                    )
+                    if state["last_reply"] != reply:
+                        send_message(sender, reply)
+                        state["last_reply"] = reply
+                    return "OK", 200
+
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
 
-                # ===== CHỐT ĐƠN =====
-                if all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
+                if not state["loai"]:
+                    send_message(sender, "Anh lấy loại nhẹ, vừa hay nặng ạ?")
+                    return "OK", 200
+                if not state["soluong"]:
+                    send_message(sender, "Anh lấy bao nhiêu lạng hoặc kg ạ?")
+                    return "OK", 200
+                if not state["name"]:
+                    send_message(sender, "Anh cho shop xin họ tên ạ?")
+                    return "OK", 200
+                if not state["phone"]:
+                    send_message(sender, "Anh cho shop xin số điện thoại nhận hàng ạ?")
+                    return "OK", 200
+                if not state["address"]:
+                    send_message(sender, "Anh cho shop xin địa chỉ nhận hàng chi tiết ạ?")
+                    return "OK", 200
 
-                    loai = state["loai"]
-                    gia = PRICE[loai]
+                # ===== ĐỦ INFO → CHỐT ĐƠN =====
+                total, ship = calculate_total(state["loai"], state["soluong"])
+                ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
-                    if gia == 120000:
-                        loai_text = "Loại 1 (120k/lạng)"
-                    elif gia == 150000:
-                        loai_text = "Loại 2 (150k/lạng)"
-                    else:
-                        loai_text = "Loại 3 (180k/lạng)"
-
-                    total, ship = calculate_total(loai,state["soluong"])
-                    ship_text = "Miễn phí ship" if ship==0 else f"Ship {SHIP_FEE:,}đ"
-
-                    confirm = (
-                        f"🎉 CHỐT ĐƠN THÀNH CÔNG 🎉\n\n"
-                        f"Họ tên: {state['name']}\n"
-                        f"SĐT: {state['phone']}\n"
-                        f"Địa chỉ: {state['address']}\n\n"
-                        f"Sản phẩm: {state['soluong']} lạng {loai_text}\n"
-                        f"{ship_text}\n"
-                        f"Tổng thanh toán: {total:,}đ\n\n"
-                        f"Cảm ơn anh/chị đã ủng hộ Thuốc Lào Quảng Định 🙏"
-                    )
-
-                    send_message(sender, confirm)
-
-                    save_order([
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        loai_text,
-                        state["soluong"],
-                        total,
-                        state["name"],
-                        state["phone"],
-                        state["address"]
-                    ])
-
-                    send_telegram(confirm)
-
-                    user_data[sender] = {
-                        "loai":None,"soluong":None,
-                        "phone":None,"address":None,
-                        "name":None,"intro_sent":True
-                    }
-
+                # Nhận diện lại loại chuẩn 1-2-3
+                if state["loai"] == "nhẹ":
+                    loai_text = "Loại 1 (120k/lạng)"
+                elif state["loai"] == "vừa":
+                    loai_text = "Loại 2 (150k/lạng)"
                 else:
-                    reply = ai_reply(text)
-                    if reply:
-                        send_message(sender, reply)
+                    loai_text = "Loại 3 (180k/lạng)"
 
-    return "OK",200
+                confirm_text = (
+                    f"🎉 CHỐT ĐƠN THÀNH CÔNG 🎉\n\n"
+                    f"Họ tên: {state['name']}\n"
+                    f"SĐT: {state['phone']}\n"
+                    f"Địa chỉ: {state['address']}\n\n"
+                    f"Sản phẩm: {state['soluong']} lạng {loai_text}\n"
+                    f"{ship_text}\n"
+                    f"Tổng thanh toán: {total:,}đ\n\n"
+                    f"Cảm ơn anh/chị đã ủng hộ shop 🙏"
+                )
+
+                send_message(sender, confirm_text)
+
+                save_order([
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    loai_text,
+                    state["soluong"],
+                    total,
+                    state["name"],
+                    state["phone"],
+                    state["address"]
+                ])
+
+                send_telegram(confirm_text)
+
+                user_data[sender] = {
+                    "loai": None,
+                    "soluong": None,
+                    "phone": None,
+                    "address": None,
+                    "name": None,
+                    "intro_sent": True,
+                    "last_reply": ""
+                }
+
+    return "OK", 200
 
 # ================== VERIFY ==================
 @app.route("/webhook", methods=["GET"])
 def verify():
-    if request.args.get("hub.verify_token")==VERIFY_TOKEN:
+    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
         return request.args.get("hub.challenge")
     return "Verify token sai"
 
@@ -272,6 +295,6 @@ def verify():
 def home():
     return "BOT AI PRO đang chạy 🚀"
 
-if __name__=="__main__":
-    port=int(os.environ.get("PORT",10000))
-    app.run(host="0.0.0.0",port=port)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
