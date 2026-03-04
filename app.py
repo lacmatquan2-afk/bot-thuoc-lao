@@ -115,8 +115,12 @@ def calculate_total(loai, soluong):
 # ================== DETECT ==================
 def is_price_question(text):
     keywords = [
-        "bao nhiêu tiền","nhiu tiền","giá sao","giá",
-        "bao nhiêu 1 lạng","1 lạng bao nhiêu"
+        "bao nhiêu tiền",
+        "nhiu tiền",
+        "giá sao",
+        "giá",
+        "bao nhiêu 1 lạng",
+        "1 lạng bao nhiêu"
     ]
     return any(k in text for k in keywords)
 
@@ -184,11 +188,17 @@ def webhook():
                         "address": None,
                         "name": None,
                         "intro_sent": False,
-                        "last_reply": ""
+                        "last_reply": "",
+                        "order_done": False
                     }
 
                 state = user_data[sender]
 
+                # ===== CHỐNG TRẢ LỜI TRÙNG =====
+                if state.get("order_done"):
+                    return "OK", 200
+
+                # ===== CHÀO 1 LẦN =====
                 if not state["intro_sent"]:
                     welcome = (
                         "Chào bạn đã đến với Thuốc Lào Quảng Định của chúng tôi 👋\n"
@@ -200,6 +210,7 @@ def webhook():
                     state["last_reply"] = welcome
                     return "OK", 200
 
+                # ===== HỎI GIÁ =====
                 if is_price_question(text):
                     reply = (
                         "Giá hiện tại:\n"
@@ -213,12 +224,14 @@ def webhook():
                         state["last_reply"] = reply
                     return "OK", 200
 
+                # ===== NHẬN DIỆN INFO =====
                 state["loai"] = detect_loai(text) or state["loai"]
                 state["soluong"] = detect_quantity(text) or state["soluong"]
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
 
+                # ===== THIẾU INFO → HỎI LẠI =====
                 if not state["loai"]:
                     send_message(sender, "Anh lấy loại nhẹ, vừa hay nặng ạ?")
                     return "OK", 200
@@ -239,30 +252,22 @@ def webhook():
                 total, ship = calculate_total(state["loai"], state["soluong"])
                 ship_text = "Miễn phí ship 🚀" if ship == 0 else f"Ship {SHIP_FEE:,}đ"
 
-                # Nhận diện lại loại chuẩn 1-2-3
-                if state["loai"] == "nhẹ":
-                    loai_text = "Loại 1 (120k/lạng)"
-                elif state["loai"] == "vừa":
-                    loai_text = "Loại 2 (150k/lạng)"
-                else:
-                    loai_text = "Loại 3 (180k/lạng)"
-
                 confirm_text = (
-                    f"🎉 CHỐT ĐƠN THÀNH CÔNG 🎉\n\n"
-                    f"Họ tên: {state['name']}\n"
+                    f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+                    f"Tên: {state['name']}\n"
                     f"SĐT: {state['phone']}\n"
-                    f"Địa chỉ: {state['address']}\n\n"
-                    f"Sản phẩm: {state['soluong']} lạng {loai_text}\n"
+                    f"Địa chỉ: {state['address']}\n"
+                    f"{state['soluong']} lạng {state['loai']}\n"
                     f"{ship_text}\n"
-                    f"Tổng thanh toán: {total:,}đ\n\n"
-                    f"Cảm ơn anh/chị đã ủng hộ shop 🙏"
+                    f"Tổng: {total:,}đ\n"
+                    f"Giao 2-4 ngày 🚚"
                 )
 
                 send_message(sender, confirm_text)
 
                 save_order([
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    loai_text,
+                    state["loai"],
                     state["soluong"],
                     total,
                     state["name"],
@@ -272,6 +277,10 @@ def webhook():
 
                 send_telegram(confirm_text)
 
+                # đánh dấu đã chốt để không gửi trùng
+                state["order_done"] = True
+
+                # reset nhưng giữ intro
                 user_data[sender] = {
                     "loai": None,
                     "soluong": None,
@@ -279,7 +288,8 @@ def webhook():
                     "address": None,
                     "name": None,
                     "intro_sent": True,
-                    "last_reply": ""
+                    "last_reply": "",
+                    "order_done": False
                 }
 
     return "OK", 200
