@@ -23,26 +23,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 PRICE = {"loại 1": 120000, "loại 2": 150000, "loại 3": 180000}
-TYPE_MAP = {
-    "120k": "loại 1",
-    "120": "loại 1",
-    "150k": "loại 2",
-    "150": "loại 2",
-    "180k": "loại 3",
-    "180": "loại 3",
-    "nhẹ": "loại 1",
-    "vừa": "loại 2",
-    "nặng": "loại 3",
-    "loại 1": "loại 1",
-    "loai 1": "loại 1",
-    "loại 2": "loại 2",
-    "loai 2": "loại 2",
-    "loại 3": "loại 3",
-    "loai 3": "loại 3",
-    "1": "loại 1",
-    "2": "loại 2",
-    "3": "loại 3",
-}
 
 SHIP_FEE = 30000
 FREE_SHIP_FROM = 3
@@ -118,49 +98,47 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
-# ================== DETECT (ĐÃ NÂNG CẤP) ==================
+# ================== DETECT PRO ==================
 def detect_quantity(text):
     kg = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)', text)
-    lang = re.search(r'(\d+)\s*(lạng)', text)
+    lang = re.search(r'(\d+)\s*(lạng|lang)', text)
     if kg:
-        kg_value = float(kg.group(1))
-        if 0.1 <= kg_value <= 10:
-            return int(kg_value * 10)
+        return int(float(kg.group(1)) * 10)
     if lang:
-        lang_value = int(lang.group(1))
-        if 1 <= lang_value <= 100:
-            return lang_value
+        return int(lang.group(1))
     return None
 
 def detect_phone(text):
-    m = re.search(r'(0\d{9,10})', text)
-    return m.group(1) if m else None
+    phone = re.findall(r'0\d[\d\.\s]{8,12}', text)
+    if phone:
+        return re.sub(r'\D', '', phone[0])
+    return None
 
 def detect_name(text):
-    match = re.search(r"(?:tên|tôi là|toi la|mình là|ten)\s+([a-zA-ZÀ-ỹ\s]{2,40})", text)
+    match = re.search(r'(?:tên|tôi là|toi la|mình là|em là|anh là)\s+([a-zA-ZÀ-ỹ\s]{2,40})', text)
     if match:
         return match.group(1).strip().title()
-    words = text.split()
+    words = text.strip().split()
     if 2 <= len(words) <= 4 and all(w.isalpha() for w in words):
         return text.title()
     return None
 
 def detect_address(text):
-    keywords = ["đường","xã","huyện","tỉnh","quận","thôn","ấp","phường","tp"]
+    keywords = ["đường","xã","huyện","tỉnh","quận","thôn","ấp","phường","tp","ship về","gửi về"]
     if any(k in text for k in keywords) and len(text) > 10:
         return text
     return None
 
 def detect_loai(text):
-    for key, value in TYPE_MAP.items():
-        if key in text:
-            return value
+    if re.search(r'120k?|loại?\s*1|nhẹ', text):
+        return "loại 1"
+    if re.search(r'150k?|loại?\s*2|vừa', text):
+        return "loại 2"
+    if re.search(r'180k?|loại?\s*3|nặng', text):
+        return "loại 3"
     return None
 
-def is_price_question(text):
-    return any(k in text for k in ["bao nhiêu","giá","nhiu tiền","bao tiền"])
-
-# ================== OPENAI TRẢ LỜI NGOÀI LUỒNG ==================
+# ================== OPENAI NGOÀI LUỒNG ==================
 def ai_reply(text):
     if not client:
         return None
@@ -181,6 +159,45 @@ Luôn hướng khách về đặt hàng."""
         return res.choices[0].message.content
     except:
         return None
+
+# ================== AI BÓC ĐƠN PRO ==================
+def ai_extract_order(text):
+    if not client:
+        return {}
+
+    try:
+        prompt = f"""
+Trích xuất thông tin đơn hàng từ câu sau.
+Trả về JSON gồm:
+loai (loại 1/2/3 hoặc null)
+soluong (số lạng)
+phone
+name
+address
+Nếu không có thì để null.
+
+Câu khách: "{text}"
+Chỉ trả JSON.
+"""
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            messages=[{"role":"user","content":prompt}]
+        )
+
+        import json
+        data = json.loads(res.choices[0].message.content.strip())
+
+        return {
+            "loai": data.get("loai"),
+            "soluong": int(data["soluong"]) if data.get("soluong") else None,
+            "phone": data.get("phone"),
+            "name": data.get("name"),
+            "address": data.get("address")
+        }
+
+    except:
+        return {}
 
 # ================== WEBHOOK ==================
 @app.route("/webhook", methods=["POST"])
@@ -222,6 +239,13 @@ def webhook():
                 state["phone"] = detect_phone(text) or state["phone"]
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
+
+                # ===== AI PRO BÓC THÔNG TIN =====
+                if not all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
+                    ai_data = ai_extract_order(text)
+                    for key in ["loai","soluong","phone","address","name"]:
+                        if not state.get(key) and ai_data.get(key):
+                            state[key] = ai_data[key]
 
                 if all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
 
