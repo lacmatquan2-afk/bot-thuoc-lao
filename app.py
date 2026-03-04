@@ -9,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 import threading
 import time
+import json
 
 app = Flask(__name__)
 
@@ -23,7 +24,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 PRICE = {"loại 1": 120000, "loại 2": 150000, "loại 3": 180000}
-
 SHIP_FEE = 30000
 FREE_SHIP_FROM = 3
 
@@ -75,6 +75,7 @@ def send_message(uid, text):
 # ================== TELEGRAM ==================
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ TELEGRAM ENV THIẾU")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     requests.post(url, json={
@@ -98,7 +99,7 @@ def calculate_total(loai, soluong):
         return total, 0
     return total + SHIP_FEE, SHIP_FEE
 
-# ================== DETECT PRO ==================
+# ================== DETECT FIX ==================
 def detect_quantity(text):
     kg = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)', text)
     lang = re.search(r'(\d+)\s*(lạng|lang)', text)
@@ -111,21 +112,19 @@ def detect_quantity(text):
 def detect_phone(text):
     phone = re.findall(r'0\d[\d\.\s]{8,12}', text)
     if phone:
-        return re.sub(r'\D', '', phone[0])
+        cleaned = re.sub(r'\D', '', phone[0])
+        if 9 <= len(cleaned) <= 11:
+            return cleaned
     return None
 
 def detect_name(text):
     match = re.search(r'(?:tên|tôi là|toi la|mình là|em là|anh là)\s+([a-zA-ZÀ-ỹ\s]{2,40})', text)
     if match:
         return match.group(1).strip().title()
-    words = text.strip().split()
-    if 2 <= len(words) <= 4 and all(w.isalpha() for w in words):
-        return text.title()
     return None
 
 def detect_address(text):
-    keywords = ["đường","xã","huyện","tỉnh","quận","thôn","ấp","phường","tp","ship về","gửi về"]
-    if any(k in text for k in keywords) and len(text) > 10:
+    if len(text) >= 6:
         return text
     return None
 
@@ -147,46 +146,48 @@ def ai_reply(text):
             model="gpt-4o-mini",
             temperature=0.7,
             messages=[
-                {
-                    "role": "system",
-                    "content": """Bạn là nhân viên bán thuốc lào Quảng Định.
-Thuốc êm, say, không hồ, không tẩm, không pha trộn.
-Luôn hướng khách về đặt hàng."""
-                },
-                {"role": "user", "content": text}
+                {"role": "system","content": "Bạn là nhân viên bán thuốc lào Quảng Định. Luôn hướng khách đặt hàng."},
+                {"role": "user","content": text}
             ]
         )
         return res.choices[0].message.content
     except:
         return None
 
-# ================== AI BÓC ĐƠN PRO ==================
+# ================== AI BÓC ĐƠN FIX ==================
 def ai_extract_order(text):
     if not client:
         return {}
 
     try:
         prompt = f"""
-Trích xuất thông tin đơn hàng từ câu sau.
-Trả về JSON gồm:
+Trích xuất thông tin đơn hàng và trả về JSON:
 loai (loại 1/2/3 hoặc null)
 soluong (số lạng)
 phone
 name
 address
-Nếu không có thì để null.
-
-Câu khách: "{text}"
+Nếu không có thì null.
+Câu: {text}
 Chỉ trả JSON.
 """
+
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             messages=[{"role":"user","content":prompt}]
         )
 
-        import json
-        data = json.loads(res.choices[0].message.content.strip())
+        content = res.choices[0].message.content.strip()
+
+        # TÁCH JSON AN TOÀN
+        content = content.replace("```json","").replace("```","").strip()
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            content = content[start:end+1]
+
+        data = json.loads(content)
 
         return {
             "loai": data.get("loai"),
@@ -196,7 +197,8 @@ Chỉ trả JSON.
             "address": data.get("address")
         }
 
-    except:
+    except Exception as e:
+        print("AI EXTRACT ERROR:", e)
         return {}
 
 # ================== WEBHOOK ==================
@@ -222,15 +224,7 @@ def webhook():
                 state = user_data[sender]
 
                 if not state["intro_sent"]:
-                    welcome = (
-                        "🔥 ĐẶC SẢN THUỐC LÀO QUẢNG ĐỊNH 🔥\n"
-                        "Êm, say, không hồ không tẩm không pha trộn.\n"
-                        "• Loại 1: 120k / 1 lạng\n"
-                        "• Loại 2: 150k / 1 lạng\n"
-                        "• Loại 3: 180k / 1 lạng\n"
-                        "Mua từ 3 lạng FREE SHIP 🚀"
-                    )
-                    send_message(sender, welcome)
+                    send_message(sender,"Chào bạn 👋 Thuốc lào Quảng Định có 3 loại 120k - 150k - 180k. Mua từ 3 lạng free ship 🚀")
                     state["intro_sent"] = True
                     return "OK",200
 
@@ -240,12 +234,13 @@ def webhook():
                 state["address"] = detect_address(text) or state["address"]
                 state["name"] = detect_name(text) or state["name"]
 
-                # ===== AI PRO BÓC THÔNG TIN =====
                 if not all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
                     ai_data = ai_extract_order(text)
                     for key in ["loai","soluong","phone","address","name"]:
                         if not state.get(key) and ai_data.get(key):
                             state[key] = ai_data[key]
+
+                print("STATE HIỆN TẠI:", state)
 
                 if all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
 
@@ -263,7 +258,6 @@ def webhook():
                     )
 
                     send_message(sender, confirm)
-
                     save_order([
                         datetime.now().strftime("%Y-%m-%d %H:%M"),
                         state["loai"],
@@ -273,7 +267,6 @@ def webhook():
                         state["phone"],
                         state["address"]
                     ])
-
                     send_telegram(confirm)
 
                     user_data[sender] = {
