@@ -1,240 +1,262 @@
 import os
 import requests
 import re
+import csv
+import json
 import time
+import threading
+from datetime import datetime
 from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
+from openai import OpenAI
 
 app = Flask(__name__)
 
-# ===== CONFIG =====
+# ================= CONFIG (Lấy từ Environment) =================
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+PAGE_ID = os.environ.get("PAGE_ID")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-GRAPH_URL = "https://graph.facebook.com/v18.0/me/messages"
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-orders = {}
-last_reply = {}
+# Cấu hình sản phẩm
+PRICE = {"loại 1": 120000, "loại 2": 150000, "loại 3": 180000}
+SHIP_FEE = 30000
+FREE_SHIP_THRESHOLD = 3 # 3 lạng freeship
+CSV_FILE = "orders.csv"
 
-# ===== SEND MESSAGE =====
-def send_message(psid, text):
+# Bộ nhớ tạm
+users = {} 
+last_interact = {} # Chống spam & Follow up
 
-    payload = {
-        "recipient": {"id": psid},
-        "message": {"text": text}
-    }
+# ================= CÔNG CỤ NHẬN DIỆN THÔNG MINH =================
 
-    params = {"access_token": PAGE_ACCESS_TOKEN}
+def detect_info(text):
+    text = text.lower()
+    info = {}
 
-    requests.post(GRAPH_URL, params=params, json=payload)
+    # 1. Nhận diện Loại (Dựa trên giá, số, hoặc đặc tính)
+    if re.search(r'120|loại 1|l1|nhẹ|êm', text):
+        info['loai'] = "loại 1"
+    elif re.search(r'150|loại 2|l2|vừa|binh thuong', text):
+        info['loai'] = "loại 2"
+    elif re.search(r'180|loại 3|l3|nặng|dam|say', text):
+        info['loai'] = "loại 3"
 
+    # 2. Nhận diện Số lượng (Hỗ trợ lạng, kg, cân, túi)
+    kg_match = re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký|cân|kí)', text)
+    lang_match = re.search(r'(\d+)\s*(lạng|lang|l|lạng)', text)
+    if kg_match:
+        info['soluong'] = int(float(kg_match.group(1)) * 10)
+    elif lang_match:
+        info['soluong'] = int(lang_match.group(1))
+    elif re.search(r'\b(1|2|3|4|5)\b', text) and 'loai' not in text: 
+        # Nếu chỉ nói số khơi khơi khi đang hỏi số lượng
+        num = re.findall(r'\d+', text)
+        if num: info['soluong'] = int(num[0])
 
-# ===== TELEGRAM =====
-def send_telegram(msg):
+    # 3. Nhận diện SĐT (Chuẩn Việt Nam)
+    phone = re.findall(r'(0[3|5|7|8|9][0-9\s.\-]{8,11})', text)
+    if phone:
+        info['phone'] = re.sub(r'\D', '', phone[0])
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    # 4. Nhận diện Tên (Sau các từ khóa)
+    name_match = re.search(r'(tên là|mình là|gửi cho|tên|anh|chị)\s+([a-zA-ZÀ-ỹ\s]{2,30})', text)
+    if name_match:
+        info['name'] = name_match.group(2).strip().title()
 
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg
-    }
+    # 5. Nhận diện Địa chỉ (Nếu chuỗi dài và có số nhà hoặc tên đường/tỉnh)
+    if len(text) > 15 or re.search(r'(số|ngõ|ngách|đường|phường|xã|huyện|tỉnh|tp|thành phố)', text):
+        # Loại trừ các câu hỏi giá
+        if "nhiêu" not in text and "giá" not in text:
+            info['address'] = text.strip()
 
-    requests.post(url, data=data)
+    return info
 
+# ================= AI BÁN HÀNG THỰC CHIẾN =================
 
-# ===== ANTI SPAM =====
-def anti_spam(psid):
+def get_ai_response(uid, user_msg):
+    if not client: return "Dạ anh lấy thuốc loại nào ạ?"
+    
+    state = users.get(uid, {})
+    prompt = f"""
+    Bạn là chuyên gia chốt đơn Thuốc Lào Quảng Định. 
+    Thông tin khách đã cung cấp: {json.dumps(state, ensure_ascii=False)}
+    
+    QUY TẮC:
+    1. Không chào hỏi dài dòng. 
+    2. Nếu thiếu thông tin nào (loại, số lượng, sđt, địa chỉ), phải hỏi bằng được thông tin đó.
+    3. Luôn nhấn mạnh: 'Mua 3 lạng được Miễn phí ship'.
+    4. Giọng văn: Nhiệt tình, dân dã, quyết đoán.
+    5. Nếu khách hỏi lan man, kéo khách về việc đặt hàng.
+    """
+    
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_msg}],
+            temperature=0.5
+        )
+        return res.choices[0].message.content
+    except:
+        return "Dạ anh cho em xin SĐT và Địa chỉ để em gửi thuốc sớm cho mình ạ!"
 
-    now = time.time()
+# ================= XỬ LÝ FACEBOOK API =================
 
-    if psid in last_reply:
+def send_fb_message(recipient_id, message_text):
+    url = f"https://graph.facebook.com/v19.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {"recipient": {"id": recipient_id}, "message": {"text": message_text}}
+    requests.post(url, json=payload)
 
-        if now - last_reply[psid] < 3:
-            return True
+def send_private_reply(comment_id, message_text):
+    """Gửi tin nhắn trực tiếp cho người comment"""
+    url = f"https://graph.facebook.com/v19.0/{comment_id}/private_replies?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, json={"message": message_text})
 
-    last_reply[psid] = now
+def reply_comment(comment_id):
+    """Trả lời comment công khai"""
+    url = f"https://graph.facebook.com/v19.0/{comment_id}/comments?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, data={"message": "Dạ anh check inbox em tư vấn loại ngon nhất cho mình nhé!"})
+
+# ================= LOGIC CHỐT ĐƠN & LƯU TRỮ =================
+
+def finalize_order(uid):
+    s = users[uid]
+    if all([s['loai'], s['soluong'], s['phone'], s['address']]):
+        # Tính tiền
+        unit_price = PRICE.get(s['loai'], 150000)
+        subtotal = unit_price * s['soluong']
+        ship = 0 if s['soluong'] >= FREE_SHIP_THRESHOLD else SHIP_FEE
+        total = subtotal + ship
+        
+        order_msg = (
+            f"🔔 XÁC NHẬN ĐƠN HÀNG THÀNH CÔNG\n"
+            f"---------------------------\n"
+            f"👤 Khách hàng: {s.get('name', 'Quý khách')}\n"
+            f"📞 SĐT: {s['phone']}\n"
+            f"🏠 Địa chỉ: {s['address']}\n"
+            f"📦 Hàng: {s['soluong']} lạng {s['loai']}\n"
+            f"💰 Tổng thanh toán: {total:,}đ\n"
+            f"(Miễn phí ship)" if ship == 0 else f"(Ship: {ship:,}đ)"
+        )
+        
+        # Gửi xác nhận cho khách và Telegram
+        send_fb_message(uid, order_msg + "\n\nCảm ơn anh, bên em sẽ gọi xác nhận và gửi hàng ngay ạ!")
+        send_to_telegram(f"🔥 CÓ ĐƠN MỚI!\n{order_msg}")
+        
+        # Lưu CSV
+        save_to_csv([datetime.now().strftime("%d/%m %H:%M"), s['loai'], s['soluong'], total, s.get('name',''), s['phone'], s['address']])
+        
+        # Reset trạng thái
+        users[uid] = {k: None for k in users[uid]}
+        return True
     return False
 
+def save_to_csv(row):
+    file_exists = os.path.isfile(CSV_FILE)
+    with open(CSV_FILE, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Thời gian", "Loại", "SL", "Tổng", "Tên", "SĐT", "Địa chỉ"])
+        writer.writerow(row)
 
-# ===== KEYWORD BOT =====
-def auto_reply(text):
+def send_to_telegram(text):
+    if TELEGRAM_BOT_TOKEN:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
-    text = text.lower()
+# ================= TỰ ĐỘNG HÓA (CHRON JOBS) =================
 
-    if any(x in text for x in ["thuốc ngon", "ngon ko", "thuốc ngon ko"]):
-        return "Thuốc lào Quảng Định chuẩn quê 100%, hút êm, say và rất đậm."
+def auto_post_daily():
+    if not PAGE_ID or not PAGE_ACCESS_TOKEN: return
+    posts = [
+        "Thuốc lào Quảng Định - Êm say, hậu ngọt. Loại 1 120k, Loại 2 150k, Loại 3 180k. Free ship từ 3 lạng!",
+        "Đã là đàn ông phải có tí 'khói'. Thuốc nhà em bao ngon, không nóng cổ. Inbox nhận ưu đãi freeship ngay!",
+        "Sáng ra làm biếu thuốc lào - Tỉnh táo cả ngày. Anh em đặt hàng để lại SĐT dưới comment nhé!"
+    ]
+    import random
+    msg = random.choice(posts)
+    url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
+    requests.post(url, data={"message": msg, "access_token": PAGE_ACCESS_TOKEN})
 
-    if any(x in text for x in ["phê ko", "phê không", "say ko"]):
-        return "Thuốc nhà em hút rất phê và say nhé anh."
+scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post_daily, 'cron', hour=8, minute=30)
+scheduler.start()
 
-    if any(x in text for x in ["bao nhiêu", "nhiêu 1 lạng", "thuốc nhiêu", "giá"]):
-        return """
-Thuốc lào Quảng Định có 3 loại
+# ================= FLASK ROUTES =================
 
-Loại nhẹ: 120k / lạng
-Loại vừa: 150k / lạng
-Loại nặng: 180k / lạng
+@app.route("/", methods=["GET"])
+def home(): return "BOT THUỐC LÀO PRO MAX IS ACTIVE", 200
 
-Anh lấy loại nào em gửi nhé.
-"""
-
-    if "ship" in text:
-        return "Bên em hỗ trợ ship COD toàn quốc nhé."
-
-    if any(x in text for x in ["đặt", "mua", "lấy"]):
-        return "Anh cho em xin tên người nhận."
-
-    return None
-
-
-# ===== ORDER BOT =====
-def handle_order(psid, text):
-
-    if psid not in orders:
-        orders[psid] = {"step": 0}
-
-    step = orders[psid]["step"]
-
-    # STEP 1 NAME
-    if step == 0:
-
-        orders[psid]["name"] = text
-        orders[psid]["step"] = 1
-
-        return "Anh cho em xin số điện thoại nhận hàng."
-
-    # STEP 2 PHONE
-    elif step == 1:
-
-        phone = re.sub(r"\D", "", text)
-
-        if len(phone) < 9:
-            return "Anh gửi đúng số điện thoại giúp em."
-
-        orders[psid]["phone"] = phone
-        orders[psid]["step"] = 2
-
-        return "Anh gửi giúp em địa chỉ nhận hàng."
-
-    # STEP 3 ADDRESS
-    elif step == 2:
-
-        orders[psid]["address"] = text
-
-        name = orders[psid]["name"]
-        phone = orders[psid]["phone"]
-        address = orders[psid]["address"]
-
-        msg = f"""
-🔥 ĐƠN HÀNG THUỐC LÀO
-
-👤 Tên: {name}
-📞 SĐT: {phone}
-📍 Địa chỉ: {address}
-"""
-
-        send_telegram(msg)
-
-        orders.pop(psid)
-
-        return "✅ Em đã nhận đơn. Bên em sẽ gửi hàng sớm nhất."
-
-
-# ===== VERIFY =====
 @app.route("/webhook", methods=["GET"])
 def verify():
+    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+        return request.args.get("hub.challenge")
+    return "Sai Verify Token", 403
 
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-
-    if token == VERIFY_TOKEN:
-        return challenge
-
-    return "Error"
-
-
-# ===== WEBHOOK =====
 @app.route("/webhook", methods=["POST"])
 def webhook():
-
-    data = request.json
-
-    if "entry" in data:
-
+    data = request.get_json()
+    
+    if data.get("object") == "page":
         for entry in data["entry"]:
-
-            # ===== MESSAGE =====
-            if "messaging" in entry:
-
-                for event in entry["messaging"]:
-
-                    if "message" in event:
-
-                        sender = event["sender"]["id"]
-                        text = event["message"].get("text", "")
-
-                        if anti_spam(sender):
-                            return "ok", 200
-
-                        # GREETING
-                        if text.lower() in ["hi", "hello", "alo", "chào"]:
-
-                            send_message(sender,
-"""Chào bạn đã đến với thuốc lào Quảng Định.
-
-Thuốc lào nhà em êm say không hồ không tẩm đúng nguyên chất không pha tạp hàng chuẩn quê 100%.
-
-Thuốc có 3 loại
-
-Loại nhẹ 120k
-Loại vừa 150k
-Loại nặng 180k
-
-Bạn cần tư vấn hay đặt hàng cứ nhắn nhé."""
-                            )
-                            continue
-
-                        # AUTO REPLY
-                        reply = auto_reply(text)
-
-                        if reply:
-                            send_message(sender, reply)
-                            continue
-
-                        # ORDER
-                        reply = handle_order(sender, text)
-
-                        send_message(sender, reply)
-
-            # ===== COMMENT =====
+            # 1. Xử lý Comment (Auto Reply + Auto Inbox)
             if "changes" in entry:
-
                 for change in entry["changes"]:
+                    if change.get("field") == "feed" and change["value"].get("item") == "comment":
+                        v = change["value"]
+                        if v.get("verb") == "add":
+                            comment_id = v.get("comment_id")
+                            # Tránh bot tự trả lời mình
+                            if v.get("from", {}).get("id") != PAGE_ID:
+                                reply_comment(comment_id)
+                                send_private_reply(comment_id, "Chào anh, em thấy mình quan tâm thuốc lào Quảng Định. Anh lấy loại nào để em ship ạ?")
 
-                    if change["field"] == "feed":
+            # 2. Xử lý Tin nhắn (Chatbot chốt đơn)
+            for event in entry.get("messaging", []):
+                sender_id = event["sender"]["id"]
+                if sender_id == PAGE_ID: continue
+                
+                msg_text = event.get("message", {}).get("text", "")
+                if not msg_text: continue
 
-                        value = change["value"]
+                # Chống spam: Nếu nhắn quá nhanh trong 1s thì bỏ qua
+                now = time.time()
+                if sender_id in last_interact and now - last_interact[sender_id] < 1:
+                    continue
+                last_interact[sender_id] = now
 
-                        if "comment_id" in value:
+                # Khởi tạo user nếu mới
+                if sender_id not in users:
+                    users[sender_id] = {"loai":None, "soluong":None, "phone":None, "address":None, "name":None}
 
-                            comment = value.get("message", "")
-                            user_id = value.get("from", {}).get("id")
+                # Cập nhật thông tin từ tin nhắn
+                extracted = detect_info(msg_text)
+                for k, v in extracted.items():
+                    if v: users[sender_id][k] = v
 
-                            if comment:
+                # Kiểm tra xem đủ đơn chưa
+                if finalize_order(sender_id):
+                    continue
+                
+                # Nếu chưa đủ, dùng AI để ép khách
+                ai_msg = get_ai_response(sender_id, msg_text)
+                send_fb_message(sender_id, ai_msg)
 
-                                reply = auto_reply(comment)
+    return "OK", 200
 
-                                if reply:
-                                    send_message(user_id, reply)
+# ================= KEEP ALIVE & RUN =================
 
-    return "ok", 200
+def keep_alive():
+    while True:
+        try: requests.get("https://bot-thuoc-lao.onrender.com/") # Thay link web của bạn
+        except: pass
+        time.sleep(600)
 
-
-# ===== RUN =====
 if __name__ == "__main__":
-
+    threading.Thread(target=keep_alive, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
