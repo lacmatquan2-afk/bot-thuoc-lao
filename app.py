@@ -1,349 +1,215 @@
 import os
 import requests
 import re
-import csv
-import time
-from datetime import datetime
 from flask import Flask, request
 
 app = Flask(__name__)
 
 # ================= CONFIG =================
 
-PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
-PAGE_ID = os.environ.get("PAGE_ID")
+PAGE_ACCESS_TOKEN = "PAGE_ACCESS_TOKEN"
+VERIFY_TOKEN = "VERIFY_TOKEN"
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = "TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "CHAT_ID"
 
-PRICE = {
-    "loại 1":120000,
-    "loại 2":150000,
-    "loại 3":180000
-}
+# lưu thông tin khách
+customers = {}
 
-SHIP = 30000
-FREE_SHIP = 3
+# ================= HÀM GỬI TIN NHẮN =================
 
-users={}
-last_reply={}
+def send_message(psid, text):
 
-CSV_FILE="orders.csv"
+    url = "https://graph.facebook.com/v18.0/me/messages"
 
-# ================= SEND MESSAGE =================
+    params = {"access_token": PAGE_ACCESS_TOKEN}
 
-def send_message(uid,text):
+    headers = {"Content-Type": "application/json"}
 
-    url=f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    data = {
+        "recipient": {"id": psid},
+        "message": {"text": text}
+    }
 
-    requests.post(url,json={
-        "recipient":{"id":uid},
-        "message":{"text":text}
-    })
+    requests.post(url, params=params, headers=headers, json=data)
 
-# ================= TELEGRAM =================
+# ================= GỬI TELEGRAM =================
 
 def send_telegram(text):
 
-    if not TELEGRAM_BOT_TOKEN:
-        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    url=f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text
+    }
 
-    requests.post(url,json={
-        "chat_id":TELEGRAM_CHAT_ID,
-        "text":text
-    })
+    requests.post(url, data=data)
 
-# ================= SAVE CSV =================
+# ================= NHẬN DIỆN TỪ KHÓA =================
 
-def save_order(order):
+def detect_question(msg):
 
-    exist=os.path.isfile(CSV_FILE)
+    msg = msg.lower()
 
-    with open(CSV_FILE,"a",newline="",encoding="utf-8") as f:
+    if "thuốc phê ko" in msg:
+        return "phê"
 
-        writer=csv.writer(f)
+    if "thuốc ngon ko" in msg or "ngon ko" in msg:
+        return "ngon"
 
-        if not exist:
-            writer.writerow([
-                "time","loai","soluong","tong","ten","sdt","diachi"
-            ])
+    if "nhiu 1 lạng" in msg or "nhiêu 1 lạng" in msg or "thuốc nhiêu" in msg:
+        return "giá"
 
-        writer.writerow(order)
-
-# ================= DETECT =================
-
-def detect_loai(text):
-
-    if re.search(r'loai\s*1|loại\s*1|nhẹ|120k',text):
-        return "loại 1"
-
-    if re.search(r'loai\s*2|loại\s*2|vừa|150k',text):
-        return "loại 2"
-
-    if re.search(r'loai\s*3|loại\s*3|nặng|180k',text):
-        return "loại 3"
+    if "free ship ko" in msg:
+        return "ship"
 
     return None
 
 
-def detect_quantity(text):
+# ================= XỬ LÝ TIN NHẮN =================
 
-    lang=re.search(r'(\d+)\s*(lạng|lang)',text)
+def handle_message(psid, msg):
 
-    kg=re.search(r'(\d+)\s*(kg|ký)',text)
+    global customers
 
-    if kg:
-        return int(kg.group(1))*10
+    if psid not in customers:
 
-    if lang:
-        return int(lang.group(1))
-
-    return None
-
-
-def detect_phone(text):
-
-    phone=re.findall(r'0\d{9}',text)
-
-    if phone:
-        return phone[0]
-
-    return None
-
-
-def detect_name(text):
-
-    match=re.search(r'(?:tên|toi la|tôi là|em là|anh là)\s+([a-zA-ZÀ-ỹ\s]{2,40})',text)
-
-    if match:
-        return match.group(1).title()
-
-    return None
-
-
-def detect_address(text):
-
-    if len(text)>10:
-        return text
-
-    return None
-
-# ================= CALCULATE =================
-
-def calculate(loai,soluong):
-
-    total=PRICE[loai]*soluong
-
-    if soluong>=FREE_SHIP:
-        return total,0
-
-    return total+SHIP,SHIP
-
-# ================= KEYWORD REPLY =================
-
-def keyword_reply(text):
-
-    if re.search(r'phê|mạnh',text):
-        return "Thuốc bên em phê mạnh và rất êm, không hồ không tẩm, chuẩn thuốc quê 100%."
-
-    if re.search(r'ngon',text):
-        return "Thuốc lào Quảng Định bên em rất đậm và êm, hút say nhưng không gắt."
-
-    if re.search(r'nhiu|bao nhiêu|giá',text):
-        return (
-        "Giá thuốc lào:\n"
-        "Loại 1:120k/lạng\n"
-        "Loại 2:150k/lạng\n"
-        "Loại 3:180k/lạng\n"
-        "Mua 3 lạng free ship 🚀"
-        )
-
-    if re.search(r'ship',text):
-        return "Bên em ship toàn quốc, mua từ 3 lạng free ship."
-
-    return None
-
-# ================= ORDER CHECK =================
-
-def check_order(uid):
-
-    state=users[uid]
-
-    if all([
-        state["loai"],
-        state["soluong"],
-        state["phone"],
-        state["name"],
-        state["address"]
-    ]):
-
-        total,ship=calculate(state["loai"],state["soluong"])
-
-        ship_text="Free ship" if ship==0 else f"Ship {SHIP}"
-
-        msg=(
-        f"🎉 CHỐT ĐƠN 🎉\n"
-        f"{state['soluong']} lạng {state['loai']}\n"
-        f"{ship_text}\n"
-        f"Tổng {total:,}đ\n\n"
-        f"Tên: {state['name']}\n"
-        f"SĐT: {state['phone']}\n"
-        f"Địa chỉ: {state['address']}"
-        )
-
-        send_message(uid,msg)
-
-        send_telegram(msg)
-
-        save_order([
-            datetime.now(),
-            state["loai"],
-            state["soluong"],
-            total,
-            state["name"],
-            state["phone"],
-            state["address"]
-        ])
-
-        users[uid]={
-            "loai":None,
-            "soluong":None,
-            "phone":None,
-            "address":None,
-            "name":None
+        customers[psid] = {
+            "name": "",
+            "phone": "",
+            "address": ""
         }
 
-        return True
+        send_message(psid,
+        """Chào bạn đã đến với Thuốc Lào Quảng Định
 
-    return False
+Thuốc lào nhà em:
+êm say
+không hồ
+không tẩm
+đúng nguyên chất
+không pha tạp
+hàng chuẩn quê 100%
 
-# ================= COMMENT REPLY =================
+Bên em có 3 loại:
 
-def reply_comment(comment_id):
+Loại nhẹ: 120k / lạng  
+Loại vừa: 150k / lạng  
+Loại nặng: 180k / lạng  
 
-    url=f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+Anh chị muốn đặt loại nào ạ?""")
 
-    requests.post(url,data={
-        "message":"Bạn check inbox giúp mình nhé 📩",
-        "access_token":PAGE_ACCESS_TOKEN
-    })
+        return
+
+    question = detect_question(msg)
+
+    if question == "phê":
+
+        send_message(psid,
+        "Thuốc bên em êm say phê đều anh nhé, hàng nguyên chất không pha tạp.")
+
+    elif question == "ngon":
+
+        send_message(psid,
+        "Thuốc lào Quảng Định chuẩn quê 100% hút rất đậm và thơm.")
+
+    elif question == "giá":
+
+        send_message(psid,
+        """Giá thuốc bên em:
+
+Loại nhẹ: 120k / lạng
+Loại vừa: 150k / lạng
+Loại nặng: 180k / lạng
+
+Anh muốn lấy loại nào ạ?""")
+
+    elif question == "ship":
+
+        send_message(psid,
+        "Bên em có hỗ trợ ship COD toàn quốc anh nhé.")
+
+    # nhận diện SĐT
+    phone = re.findall(r'\d{9,11}', msg)
+
+    if phone:
+
+        customers[psid]["phone"] = phone[0]
+
+        send_message(psid, "Anh gửi giúp em địa chỉ nhận hàng với ạ")
+
+        return
+
+    # nhận diện địa chỉ
+    if len(msg) > 10 and customers[psid]["phone"] != "" and customers[psid]["address"] == "":
+
+        customers[psid]["address"] = msg
+
+        order_text = f"""
+ĐƠN HÀNG MỚI
+
+SĐT: {customers[psid]['phone']}
+Địa chỉ: {customers[psid]['address']}
+"""
+
+        send_telegram(order_text)
+
+        send_message(psid,
+        "Em đã nhận đơn. Bên em sẽ gửi hàng sớm nhất cho anh ạ.")
 
 # ================= WEBHOOK =================
 
-@app.route("/webhook",methods=["POST"])
+@app.route("/webhook", methods=["GET"])
+def verify():
+
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    if token == VERIFY_TOKEN:
+        return challenge
+
+    return "error"
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data=request.get_json()
+    data = request.json
 
-    if data.get("object")=="page":
+    if "entry" in data:
 
         for entry in data["entry"]:
 
-            if "changes" in entry:
+            for messaging in entry["messaging"]:
 
-                for change in entry["changes"]:
+                if "message" in messaging:
 
-                    if change["field"]=="feed":
+                    psid = messaging["sender"]["id"]
 
-                        value=change["value"]
+                    msg = messaging["message"].get("text")
 
-                        if value.get("comment_id"):
+                    if msg:
 
-                            reply_comment(value["comment_id"])
+                        handle_message(psid, msg)
 
-            for event in entry.get("messaging",[]):
+    return "ok", 200
 
-                if "message" not in event:
-                    continue
 
-                uid=event["sender"]["id"]
+# ================= TRẢ LỜI COMMENT =================
 
-                text=event["message"].get("text","").lower()
+def reply_comment(comment_id, text):
 
-                now=time.time()
+    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
 
-                if uid in last_reply and now-last_reply[uid]<2:
-                    return "OK",200
+    params = {
+        "access_token": PAGE_ACCESS_TOKEN,
+        "message": text
+    }
 
-                last_reply[uid]=now
+    requests.post(url, params=params)
 
-                if uid not in users:
+# ================= CHẠY SERVER =================
 
-                    users[uid]={
-                        "loai":None,
-                        "soluong":None,
-                        "phone":None,
-                        "address":None,
-                        "name":None
-                    }
+if __name__ == "__main__":
 
-                    send_message(uid,
-                    "Chào bạn 👋\n"
-                    "Thuốc lào Quảng Định nhà em êm say không hồ không tẩm.\n\n"
-                    "Loại 1:120k\n"
-                    "Loại 2:150k\n"
-                    "Loại 3:180k\n\n"
-                    "Bạn lấy loại mấy ạ?"
-                    )
-
-                    return "OK",200
-
-                state=users[uid]
-
-                state["loai"]=detect_loai(text) or state["loai"]
-                state["soluong"]=detect_quantity(text) or state["soluong"]
-                state["phone"]=detect_phone(text) or state["phone"]
-                state["name"]=detect_name(text) or state["name"]
-                state["address"]=detect_address(text) or state["address"]
-
-                if check_order(uid):
-                    return "OK",200
-
-                reply=keyword_reply(text)
-
-                if reply:
-                    send_message(uid,reply)
-
-                elif not state["loai"]:
-                    send_message(uid,"Bạn lấy loại 1 2 hay 3 ạ?")
-
-                elif not state["soluong"]:
-                    send_message(uid,"Bạn lấy mấy lạng ạ?")
-
-                elif not state["name"]:
-                    send_message(uid,"Bạn cho mình xin tên người nhận.")
-
-                elif not state["phone"]:
-                    send_message(uid,"Bạn gửi giúp mình số điện thoại.")
-
-                elif not state["address"]:
-                    send_message(uid,"Bạn gửi giúp mình địa chỉ nhận hàng.")
-
-    return "OK",200
-
-# ================= VERIFY =================
-
-@app.route("/webhook",methods=["GET"])
-def verify():
-
-    if request.args.get("hub.verify_token")==VERIFY_TOKEN:
-        return request.args.get("hub.challenge")
-
-    return "verify token sai"
-
-# ================= HOME =================
-
-@app.route("/")
-def home():
-    return "BOT THUỐC LÀO PRO RUNNING"
-
-# ================= RUN =================
-
-if __name__=="__main__":
-
-    port=int(os.environ.get("PORT",10000))
-
-    app.run(host="0.0.0.0",port=port)
+    app.run(host="0.0.0.0", port=5000)
