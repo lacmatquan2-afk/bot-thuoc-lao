@@ -5,161 +5,115 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
+# ===== CONFIG =====
+PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 
-PAGE_ACCESS_TOKEN = "PAGE_ACCESS_TOKEN"
-VERIFY_TOKEN = "VERIFY_TOKEN"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-TELEGRAM_TOKEN = "TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "CHAT_ID"
+GRAPH_URL = "https://graph.facebook.com/v18.0/me/messages"
 
-# lưu thông tin khách
-customers = {}
+orders = {}
 
-# ================= HÀM GỬI TIN NHẮN =================
-
+# ===== SEND MESSAGE =====
 def send_message(psid, text):
-
-    url = "https://graph.facebook.com/v18.0/me/messages"
-
-    params = {"access_token": PAGE_ACCESS_TOKEN}
-
-    headers = {"Content-Type": "application/json"}
-
-    data = {
+    payload = {
         "recipient": {"id": psid},
         "message": {"text": text}
     }
 
-    requests.post(url, params=params, headers=headers, json=data)
+    params = {
+        "access_token": PAGE_ACCESS_TOKEN
+    }
 
-# ================= GỬI TELEGRAM =================
+    requests.post(GRAPH_URL, params=params, json=payload)
 
-def send_telegram(text):
+
+# ===== TELEGRAM =====
+def send_telegram(msg):
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
+        "text": msg
     }
 
     requests.post(url, data=data)
 
-# ================= NHẬN DIỆN TỪ KHÓA =================
 
-def detect_question(msg):
+# ===== KEYWORD REPLY =====
+def auto_reply(text):
 
-    msg = msg.lower()
+    text = text.lower()
 
-    if "thuốc phê ko" in msg:
-        return "phê"
+    if "thuốc ngon ko" in text or "ngon ko" in text:
+        return "Thuốc lào Quảng Định chuẩn quê 100% hút êm và rất đậm."
 
-    if "thuốc ngon ko" in msg or "ngon ko" in msg:
-        return "ngon"
+    if "phê ko" in text:
+        return "Thuốc lào nhà em hút rất phê và say nhé anh."
 
-    if "nhiu 1 lạng" in msg or "nhiêu 1 lạng" in msg or "thuốc nhiêu" in msg:
-        return "giá"
+    if "nhiêu 1 lạng" in text or "bao nhiêu" in text or "thuốc nhiêu" in text:
+        return """
+Thuốc lào Quảng Định có 3 loại
 
-    if "free ship ko" in msg:
-        return "ship"
+Loại nhẹ: 120k / lạng  
+Loại vừa: 150k / lạng  
+Loại nặng: 180k / lạng
+
+Anh lấy loại nào em gửi nhé.
+"""
+
+    if "ship" in text:
+        return "Bên em có hỗ trợ ship COD toàn quốc nhé."
 
     return None
 
 
-# ================= XỬ LÝ TIN NHẮN =================
+# ===== ORDER BOT =====
+def handle_order(psid, text):
 
-def handle_message(psid, msg):
+    if psid not in orders:
+        orders[psid] = {"step": 0}
 
-    global customers
+    step = orders[psid]["step"]
 
-    if psid not in customers:
+    if step == 0:
+        orders[psid]["name"] = text
+        orders[psid]["step"] = 1
+        return "Anh cho em xin số điện thoại nhận hàng."
 
-        customers[psid] = {
-            "name": "",
-            "phone": "",
-            "address": ""
-        }
+    elif step == 1:
+        orders[psid]["phone"] = text
+        orders[psid]["step"] = 2
+        return "Anh gửi giúp em địa chỉ nhận hàng."
 
-        send_message(psid,
-        """Chào bạn đã đến với Thuốc Lào Quảng Định
+    elif step == 2:
 
-Thuốc lào nhà em:
-êm say
-không hồ
-không tẩm
-đúng nguyên chất
-không pha tạp
-hàng chuẩn quê 100%
+        orders[psid]["address"] = text
 
-Bên em có 3 loại:
+        name = orders[psid]["name"]
+        phone = orders[psid]["phone"]
+        address = orders[psid]["address"]
 
-Loại nhẹ: 120k / lạng  
-Loại vừa: 150k / lạng  
-Loại nặng: 180k / lạng  
-
-Anh chị muốn đặt loại nào ạ?""")
-
-        return
-
-    question = detect_question(msg)
-
-    if question == "phê":
-
-        send_message(psid,
-        "Thuốc bên em êm say phê đều anh nhé, hàng nguyên chất không pha tạp.")
-
-    elif question == "ngon":
-
-        send_message(psid,
-        "Thuốc lào Quảng Định chuẩn quê 100% hút rất đậm và thơm.")
-
-    elif question == "giá":
-
-        send_message(psid,
-        """Giá thuốc bên em:
-
-Loại nhẹ: 120k / lạng
-Loại vừa: 150k / lạng
-Loại nặng: 180k / lạng
-
-Anh muốn lấy loại nào ạ?""")
-
-    elif question == "ship":
-
-        send_message(psid,
-        "Bên em có hỗ trợ ship COD toàn quốc anh nhé.")
-
-    # nhận diện SĐT
-    phone = re.findall(r'\d{9,11}', msg)
-
-    if phone:
-
-        customers[psid]["phone"] = phone[0]
-
-        send_message(psid, "Anh gửi giúp em địa chỉ nhận hàng với ạ")
-
-        return
-
-    # nhận diện địa chỉ
-    if len(msg) > 10 and customers[psid]["phone"] != "" and customers[psid]["address"] == "":
-
-        customers[psid]["address"] = msg
-
-        order_text = f"""
+        msg = f"""
 ĐƠN HÀNG MỚI
 
-SĐT: {customers[psid]['phone']}
-Địa chỉ: {customers[psid]['address']}
+Tên: {name}
+SĐT: {phone}
+Địa chỉ: {address}
 """
 
-        send_telegram(order_text)
+        send_telegram(msg)
 
-        send_message(psid,
-        "Em đã nhận đơn. Bên em sẽ gửi hàng sớm nhất cho anh ạ.")
+        orders.pop(psid)
 
-# ================= WEBHOOK =================
+        return "Em đã nhận đơn. Bên em sẽ gửi hàng sớm nhất."
 
+
+
+# ===== WEBHOOK VERIFY =====
 @app.route("/webhook", methods=["GET"])
 def verify():
 
@@ -169,8 +123,10 @@ def verify():
     if token == VERIFY_TOKEN:
         return challenge
 
-    return "error"
+    return "Error"
 
+
+# ===== RECEIVE MESSAGE =====
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
@@ -180,36 +136,53 @@ def webhook():
 
         for entry in data["entry"]:
 
-            for messaging in entry["messaging"]:
+            if "messaging" in entry:
 
-                if "message" in messaging:
+                for event in entry["messaging"]:
 
-                    psid = messaging["sender"]["id"]
+                    if "message" in event:
 
-                    msg = messaging["message"].get("text")
+                        sender = event["sender"]["id"]
+                        text = event["message"].get("text", "")
 
-                    if msg:
+                        # greeting
+                        if text.lower() in ["hi", "hello", "alo", "chào"]:
+                            send_message(sender,
+                            """Chào bạn đã đến với thuốc lào Quảng Định.
 
-                        handle_message(psid, msg)
+Thuốc lào nhà em êm say không hồ không tẩm đúng nguyên chất 100%.
+
+Thuốc có 3 loại
+
+120k / lạng
+150k / lạng
+180k / lạng
+
+Bạn cần tư vấn hay đặt hàng cứ nhắn nhé."""
+                            )
+                            continue
+
+
+                        # auto reply
+                        reply = auto_reply(text)
+
+                        if reply:
+                            send_message(sender, reply)
+                            continue
+
+
+                        # order
+                        reply = handle_order(sender, text)
+
+                        send_message(sender, reply)
+
 
     return "ok", 200
 
 
-# ================= TRẢ LỜI COMMENT =================
-
-def reply_comment(comment_id, text):
-
-    url = f"https://graph.facebook.com/v18.0/{comment_id}/comments"
-
-    params = {
-        "access_token": PAGE_ACCESS_TOKEN,
-        "message": text
-    }
-
-    requests.post(url, params=params)
-
-# ================= CHẠY SERVER =================
-
+# ===== RUN SERVER =====
 if __name__ == "__main__":
 
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 10000))
+
+    app.run(host="0.0.0.0", port=port)
