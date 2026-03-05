@@ -3,314 +3,426 @@ import requests
 import re
 import csv
 import json
+import time
+import threading
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
 app = Flask(__name__)
 
-# ===== CONFIG =====
+# ================= CONFIG =================
+
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
+PAGE_ID = os.environ.get("PAGE_ID")
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# ===== USER STATE =====
-users = {}
+PRICE = {
+    "loại 1":120000,
+    "loại 2":150000,
+    "loại 3":180000
+}
 
-# ===== SEND FB MESSAGE =====
-def send_message(user_id, text):
+SHIP = 30000
+FREE_SHIP = 3
 
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+CSV_FILE="orders.csv"
 
-    data = {
-        "recipient": {"id": user_id},
-        "message": {"text": text}
-    }
+users={}
+last_message={}
 
-    requests.post(url, json=data)
+# ================= AUTO POST =================
 
+def auto_post():
 
-# ===== TELEGRAM =====
-def send_telegram(text):
-
-    if not TELEGRAM_TOKEN:
+    if not PAGE_ACCESS_TOKEN:
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    msg=(
+        "🔥 THUỐC LÀO QUẢNG ĐỊNH 🔥\n\n"
+        "Loại 1:120k/lạng\n"
+        "Loại 2:150k/lạng\n"
+        "Loại 3:180k/lạng\n\n"
+        "Mua 3 lạng FREE SHIP 🚀\n"
+        "Inbox đặt hàng ngay!"
+    )
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    }
+    url=f"https://graph.facebook.com/v18.0/{PAGE_ID}/feed"
 
-    requests.post(url, json=payload)
+    try:
+        requests.post(url,data={
+            "message":msg,
+            "access_token":PAGE_ACCESS_TOKEN
+        })
+    except:
+        pass
 
+scheduler=BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+scheduler.add_job(auto_post,"cron",hour=8)
+scheduler.start()
 
-# ===== SAVE CSV =====
+# ================= ANTI SLEEP =================
+
+def keep_alive():
+
+    while True:
+        try:
+            requests.get("https://bot-thuoc-lao.onrender.com/")
+        except:
+            pass
+        time.sleep(300)
+
+threading.Thread(target=keep_alive,daemon=True).start()
+
+# ================= SEND MESSAGE =================
+
+def send_message(uid,text):
+
+    url=f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+
+    requests.post(url,json={
+        "recipient":{"id":uid},
+        "message":{"text":text}
+    })
+
+# ================= TELEGRAM =================
+
+def send_telegram(text):
+
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    url=f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    try:
+        requests.post(url,json={
+            "chat_id":TELEGRAM_CHAT_ID,
+            "text":text
+        })
+    except:
+        pass
+
+# ================= SAVE CSV =================
+
 def save_order(order):
 
-    file = "orders.csv"
+    exist=os.path.isfile(CSV_FILE)
 
-    exists = os.path.isfile(file)
+    with open(CSV_FILE,"a",newline="",encoding="utf-8") as f:
 
-    with open(file, "a", newline="", encoding="utf-8") as f:
+        writer=csv.writer(f)
 
-        writer = csv.writer(f)
+        if not exist:
+            writer.writerow([
+                "time","loai","soluong","tong","ten","sdt","diachi"
+            ])
 
-        if not exists:
-            writer.writerow(["time","name","phone","address","loai","soluong","total"])
+        writer.writerow(order)
 
-        writer.writerow([
-            datetime.now(),
-            order["name"],
-            order["phone"],
-            order["address"],
-            order["loai"],
-            order["soluong"],
-            order["total"]
-        ])
+# ================= DETECT =================
 
+def detect_loai(text):
 
-# ===== PRICE =====
-def get_price(loai):
+    if re.search(r'loai\s*1|loại\s*1|\b1\b|120k|nhẹ',text):
+        return "loại 1"
 
-    if loai == 1:
-        return 120000
+    if re.search(r'loai\s*2|loại\s*2|\b2\b|150k|vừa',text):
+        return "loại 2"
 
-    if loai == 2:
-        return 150000
+    if re.search(r'loai\s*3|loại\s*3|\b3\b|180k|nặng',text):
+        return "loại 3"
 
-    if loai == 3:
-        return 180000
-
-    return 0
+    return None
 
 
-# ===== AI OUTSIDE ANSWER =====
-def ai_reply(question):
+def detect_quantity(text):
+
+    kg=re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)',text)
+
+    lang=re.search(r'(\d+)\s*(lạng|lang)',text)
+
+    if kg:
+        return int(float(kg.group(1))*10)
+
+    if lang:
+        return int(lang.group(1))
+
+    return None
+
+
+def detect_phone(text):
+
+    phone=re.findall(r'0\d[\d\s\.]{8,12}',text)
+
+    if phone:
+        return re.sub(r'\D','',phone[0])
+
+    return None
+
+
+def detect_name(text):
+
+    match=re.search(r'(?:tên|toi la|tôi là|em là|anh là)\s+([a-zA-ZÀ-ỹ\s]{2,40})',text)
+
+    if match:
+        return match.group(1).title()
+
+    return None
+
+
+def detect_address(text):
+
+    if len(text)>8:
+        return text
+
+    return None
+
+# ================= CALCULATE =================
+
+def calculate(loai,soluong):
+
+    total=PRICE[loai]*soluong
+
+    if soluong>=FREE_SHIP:
+        return total,0
+
+    return total+SHIP,SHIP
+
+# ================= AI OUTSIDE =================
+
+def ai_reply(text):
+
+    if not client:
+        return None
 
     try:
 
-        prompt = f"""
-Bạn là nhân viên bán thuốc lào Quảng Xương.
-
-Bảng giá:
-Loại 1: 120k/lạng
-Loại 2: 150k/lạng
-Loại 3: 180k/lạng
-
-Trả lời ngắn gọn và cố gắng dẫn khách quay lại đặt hàng.
-
-Câu hỏi khách:
-{question}
-"""
-
-        res = client.chat.completions.create(
+        res=client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
+            temperature=0.7,
+            messages=[
+                {
+                    "role":"system",
+                    "content":
+                    "Bạn là nhân viên bán thuốc lào Quảng Định. "
+                    "Chỉ trả lời câu hỏi của khách và luôn hướng khách đặt hàng."
+                },
+                {"role":"user","content":text}
+            ]
         )
 
         return res.choices[0].message.content
 
     except:
-        return "Anh lấy loại mấy ạ?"
+        return None
 
+# ================= CHECK ORDER =================
 
-# ===== EXTRACT DATA =====
-def extract_info(text):
+def check_order(uid):
 
-    data = {}
+    state=users[uid]
 
-    loai = re.search(r"loại\s*(\d)", text.lower())
-    if loai:
-        data["loai"] = int(loai.group(1))
+    if all([
+        state["loai"],
+        state["soluong"],
+        state["phone"],
+        state["name"],
+        state["address"]
+    ]):
 
-    sl = re.search(r"(\d+)\s*lạng", text.lower())
-    if sl:
-        data["soluong"] = int(sl.group(1))
+        total,ship=calculate(state["loai"],state["soluong"])
 
-    phone = re.search(r"0\d{9}", text)
-    if phone:
-        data["phone"] = phone.group()
+        ship_text="Miễn phí ship" if ship==0 else f"Ship {SHIP}"
 
-    return data
+        msg=(
+            f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+            f"Tên: {state['name']}\n"
+            f"SĐT: {state['phone']}\n"
+            f"Địa chỉ: {state['address']}\n\n"
+            f"{state['soluong']} lạng {state['loai']}\n"
+            f"{ship_text}\n"
+            f"Tổng: {total:,}đ"
+        )
 
-
-# ===== HANDLE ORDER FLOW =====
-def handle_message(user_id, text):
-
-    if user_id not in users:
-
-        users[user_id] = {
-            "step": "start"
-        }
-
-    state = users[user_id]
-
-    info = extract_info(text)
-
-    for k,v in info.items():
-        state[k] = v
-
-    step = state["step"]
-
-    # ===== START =====
-    if step == "start":
-
-        send_message(user_id,
-"""Chào bạn 👋
-
-Thuốc lào Quảng Xương có:
-
-Loại 1: 120k/lạng
-Loại 2: 150k/lạng
-Loại 3: 180k/lạng
-
-Mua từ 3 lạng FREE SHIP 🚚
-
-Bạn lấy loại mấy ạ?""")
-
-        state["step"] = "ask_loai"
-        return
-
-
-    # ===== LOAI =====
-    if step == "ask_loai":
-
-        if "loai" not in state:
-
-            send_message(user_id,"Bạn lấy loại 1 2 hay 3 ạ?")
-            return
-
-        send_message(user_id,"Bạn lấy mấy lạng ạ?")
-        state["step"] = "ask_sl"
-        return
-
-
-    # ===== SOLUONG =====
-    if step == "ask_sl":
-
-        if "soluong" not in state:
-
-            send_message(user_id,"Bạn lấy mấy lạng ạ?")
-            return
-
-        send_message(user_id,"Bạn cho mình xin tên người nhận")
-        state["step"] = "ask_name"
-        return
-
-
-    # ===== NAME =====
-    if step == "ask_name":
-
-        if len(text) < 2:
-
-            send_message(user_id,"Bạn nhập tên giúp mình")
-            return
-
-        state["name"] = text
-        send_message(user_id,"Bạn cho mình xin số điện thoại")
-
-        state["step"] = "ask_phone"
-        return
-
-
-    # ===== PHONE =====
-    if step == "ask_phone":
-
-        phone = re.search(r"0\d{9}", text)
-
-        if not phone:
-
-            send_message(user_id,"SĐT chưa đúng, bạn nhập lại giúp mình")
-            return
-
-        state["phone"] = phone.group()
-
-        send_message(user_id,"Bạn gửi địa chỉ nhận hàng")
-
-        state["step"] = "ask_address"
-        return
-
-
-    # ===== ADDRESS =====
-    if step == "ask_address":
-
-        state["address"] = text
-
-        price = get_price(state["loai"])
-
-        total = price * state["soluong"]
-
-        msg = f"""
-🎉 XÁC NHẬN ĐƠN 🎉
-
-Tên: {state['name']}
-SĐT: {state['phone']}
-Địa chỉ: {state['address']}
-
-{state['soluong']} lạng loại {state['loai']}
-
-Tổng: {total}đ
-"""
-
-        send_message(user_id,msg)
-
-        order = state.copy()
-        order["total"] = total
-
-        save_order(order)
+        send_message(uid,msg)
 
         send_telegram(msg)
 
-        users[user_id] = {"step":"start"}
+        save_order([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            state["loai"],
+            state["soluong"],
+            total,
+            state["name"],
+            state["phone"],
+            state["address"]
+        ])
 
-        return
+        users[uid]={
+            "loai":None,
+            "soluong":None,
+            "phone":None,
+            "address":None,
+            "name":None
+        }
 
+        return True
 
-    # ===== OUTSIDE QUESTION =====
-    reply = ai_reply(text)
-    send_message(user_id,reply)
+    return False
 
+# ================= FOLLOW UP =================
 
+def follow_up():
 
-# ===== WEBHOOK VERIFY =====
-@app.route("/", methods=["GET"])
-def verify():
+    now=time.time()
 
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-        return request.args.get("hub.challenge")
+    for uid in last_message:
 
-    return "wrong token"
+        if now-last_message[uid]>300:
 
+            send_message(uid,
+                "Anh vẫn cần thuốc lào không ạ?\n"
+                "Hôm nay bên em free ship từ 3 lạng 🚀"
+            )
 
-# ===== WEBHOOK MESSAGE =====
-@app.route("/", methods=["POST"])
+            last_message[uid]=now
+
+scheduler.add_job(follow_up,"interval",minutes=5)
+
+# ================= COMMENT AUTO =================
+
+def reply_comment(comment_id):
+
+    url=f"https://graph.facebook.com/v18.0/{comment_id}/comments"
+
+    try:
+        requests.post(url,data={
+            "message":"Bạn check inbox giúp mình nhé 📩",
+            "access_token":PAGE_ACCESS_TOKEN
+        })
+    except:
+        pass
+
+# ================= WEBHOOK =================
+
+@app.route("/webhook",methods=["POST"])
 def webhook():
 
-    data = request.json
+    data=request.get_json()
 
-    if "entry" in data:
+    if data.get("object")=="page":
 
         for entry in data["entry"]:
 
-            for messaging in entry.get("messaging", []):
+            if "changes" in entry:
 
-                sender = messaging["sender"]["id"]
+                for change in entry["changes"]:
 
-                if "message" in messaging:
+                    if change["field"]=="feed":
 
-                    text = messaging["message"].get("text","")
+                        value=change["value"]
 
-                    if text:
-                        handle_message(sender,text)
+                        if value.get("comment_id"):
 
-    return "ok"
+                            reply_comment(value["comment_id"])
 
+            for event in entry.get("messaging",[]):
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+                if "message" not in event:
+                    continue
+
+                sender=event["sender"]["id"]
+
+                text=event["message"].get("text","").lower()
+
+                last_message[sender]=time.time()
+
+                if sender not in users:
+
+                    users[sender]={
+                        "loai":None,
+                        "soluong":None,
+                        "phone":None,
+                        "address":None,
+                        "name":None
+                    }
+
+                    send_message(
+                        sender,
+                        "Chào bạn 👋\n"
+                        "Thuốc lào Quảng Định có:\n"
+                        "Loại 1:120k\n"
+                        "Loại 2:150k\n"
+                        "Loại 3:180k\n\n"
+                        "Bạn lấy loại mấy ạ?"
+                    )
+
+                    continue
+
+                state=users[sender]
+
+                state["loai"]=detect_loai(text) or state["loai"]
+                state["soluong"]=detect_quantity(text) or state["soluong"]
+                state["phone"]=detect_phone(text) or state["phone"]
+                state["name"]=detect_name(text) or state["name"]
+                state["address"]=detect_address(text) or state["address"]
+
+                if check_order(sender):
+                    continue
+
+                if not state["loai"]:
+                    send_message(sender,"Bạn lấy loại 1 2 hay 3 ạ?")
+                    continue
+
+                if not state["soluong"]:
+                    send_message(sender,"Bạn lấy mấy lạng ạ?")
+                    continue
+
+                if not state["name"]:
+                    send_message(sender,"Bạn cho mình xin tên người nhận")
+                    continue
+
+                if not state["phone"]:
+                    send_message(sender,"Bạn gửi giúp mình số điện thoại")
+                    continue
+
+                if not state["address"]:
+                    send_message(sender,"Bạn gửi giúp mình địa chỉ nhận hàng")
+                    continue
+
+                reply=ai_reply(text)
+
+                if reply:
+                    send_message(sender,reply)
+
+    return "OK",200
+
+# ================= VERIFY =================
+
+@app.route("/webhook",methods=["GET"])
+def verify():
+
+    if request.args.get("hub.verify_token")==VERIFY_TOKEN:
+        return request.args.get("hub.challenge")
+
+    return "verify token sai"
+
+# ================= HOME =================
+
+@app.route("/")
+def home():
+    return "BOT AI PRO MAX RUNNING 🚀"
+
+if __name__=="__main__":
+
+    port=int(os.environ.get("PORT",10000))
+
+    app.run(host="0.0.0.0",port=port)
