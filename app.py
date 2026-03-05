@@ -4,11 +4,12 @@ import re
 import csv
 import json
 from datetime import datetime
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from openai import OpenAI
 
 app = Flask(__name__)
 
+# ===== CONFIG =====
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -17,22 +18,27 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-user_state = {}
+# ===== USER STATE =====
+users = {}
 
-# ===== gửi tin nhắn =====
+# ===== SEND FB MESSAGE =====
 def send_message(user_id, text):
 
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
 
-    payload = {
+    data = {
         "recipient": {"id": user_id},
         "message": {"text": text}
     }
 
-    requests.post(url, json=payload)
+    requests.post(url, json=data)
 
-# ===== gửi telegram =====
+
+# ===== TELEGRAM =====
 def send_telegram(text):
+
+    if not TELEGRAM_TOKEN:
+        return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
@@ -43,7 +49,8 @@ def send_telegram(text):
 
     requests.post(url, json=payload)
 
-# ===== lưu csv =====
+
+# ===== SAVE CSV =====
 def save_order(order):
 
     file = "orders.csv"
@@ -55,7 +62,7 @@ def save_order(order):
         writer = csv.writer(f)
 
         if not exists:
-            writer.writerow(["time","name","phone","address","loai","soluong","tong"])
+            writer.writerow(["time","name","phone","address","loai","soluong","total"])
 
         writer.writerow([
             datetime.now(),
@@ -64,38 +71,11 @@ def save_order(order):
             order["address"],
             order["loai"],
             order["soluong"],
-            order["tong"]
+            order["total"]
         ])
 
-# ===== AI extract order =====
-def ai_extract(text):
 
-    prompt = f"""
-    trích xuất thông tin đơn hàng từ tin nhắn:
-
-    {text}
-
-    trả về json:
-
-    loai
-    soluong
-    name
-    phone
-    address
-    """
-
-    r = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"user","content":prompt}]
-    )
-
-    try:
-        data = json.loads(r.choices[0].message.content)
-        return data
-    except:
-        return {}
-
-# ===== giá =====
+# ===== PRICE =====
 def get_price(loai):
 
     if loai == 1:
@@ -109,73 +89,164 @@ def get_price(loai):
 
     return 0
 
-# ===== xử lý tin nhắn =====
+
+# ===== AI OUTSIDE ANSWER =====
+def ai_reply(question):
+
+    try:
+
+        prompt = f"""
+Bạn là nhân viên bán thuốc lào Quảng Xương.
+
+Bảng giá:
+Loại 1: 120k/lạng
+Loại 2: 150k/lạng
+Loại 3: 180k/lạng
+
+Trả lời ngắn gọn và cố gắng dẫn khách quay lại đặt hàng.
+
+Câu hỏi khách:
+{question}
+"""
+
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}]
+        )
+
+        return res.choices[0].message.content
+
+    except:
+        return "Anh lấy loại mấy ạ?"
+
+
+# ===== EXTRACT DATA =====
+def extract_info(text):
+
+    data = {}
+
+    loai = re.search(r"loại\s*(\d)", text.lower())
+    if loai:
+        data["loai"] = int(loai.group(1))
+
+    sl = re.search(r"(\d+)\s*lạng", text.lower())
+    if sl:
+        data["soluong"] = int(sl.group(1))
+
+    phone = re.search(r"0\d{9}", text)
+    if phone:
+        data["phone"] = phone.group()
+
+    return data
+
+
+# ===== HANDLE ORDER FLOW =====
 def handle_message(user_id, text):
 
-    if user_id not in user_state:
-        user_state[user_id] = {}
+    if user_id not in users:
 
-    state = user_state[user_id]
+        users[user_id] = {
+            "step": "start"
+        }
 
-    data = ai_extract(text)
+    state = users[user_id]
 
-    if "loai" in data:
-        state["loai"] = int(data["loai"])
+    info = extract_info(text)
 
-    if "soluong" in data:
-        state["soluong"] = int(data["soluong"])
+    for k,v in info.items():
+        state[k] = v
 
-    if "name" in data:
-        state["name"] = data["name"]
+    step = state["step"]
 
-    if "phone" in data:
-        state["phone"] = data["phone"]
-
-    if "address" in data:
-        state["address"] = data["address"]
-
-    if "loai" not in state:
+    # ===== START =====
+    if step == "start":
 
         send_message(user_id,
-        """Thuốc lào Quảng Xương có:
+"""Chào bạn 👋
+
+Thuốc lào Quảng Xương có:
 
 Loại 1: 120k/lạng
 Loại 2: 150k/lạng
 Loại 3: 180k/lạng
 
+Mua từ 3 lạng FREE SHIP 🚚
+
 Bạn lấy loại mấy ạ?""")
 
+        state["step"] = "ask_loai"
         return
 
-    if "soluong" not in state:
+
+    # ===== LOAI =====
+    if step == "ask_loai":
+
+        if "loai" not in state:
+
+            send_message(user_id,"Bạn lấy loại 1 2 hay 3 ạ?")
+            return
 
         send_message(user_id,"Bạn lấy mấy lạng ạ?")
-
+        state["step"] = "ask_sl"
         return
 
-    if "name" not in state:
+
+    # ===== SOLUONG =====
+    if step == "ask_sl":
+
+        if "soluong" not in state:
+
+            send_message(user_id,"Bạn lấy mấy lạng ạ?")
+            return
 
         send_message(user_id,"Bạn cho mình xin tên người nhận")
-
+        state["step"] = "ask_name"
         return
 
-    if "phone" not in state:
 
+    # ===== NAME =====
+    if step == "ask_name":
+
+        if len(text) < 2:
+
+            send_message(user_id,"Bạn nhập tên giúp mình")
+            return
+
+        state["name"] = text
         send_message(user_id,"Bạn cho mình xin số điện thoại")
 
+        state["step"] = "ask_phone"
         return
 
-    if "address" not in state:
 
-        send_message(user_id,"Bạn gửi giúp địa chỉ nhận hàng")
+    # ===== PHONE =====
+    if step == "ask_phone":
 
+        phone = re.search(r"0\d{9}", text)
+
+        if not phone:
+
+            send_message(user_id,"SĐT chưa đúng, bạn nhập lại giúp mình")
+            return
+
+        state["phone"] = phone.group()
+
+        send_message(user_id,"Bạn gửi địa chỉ nhận hàng")
+
+        state["step"] = "ask_address"
         return
 
-    price = get_price(state["loai"])
 
-    tong = price * state["soluong"]
+    # ===== ADDRESS =====
+    if step == "ask_address":
 
-    msg = f"""
+        state["address"] = text
+
+        price = get_price(state["loai"])
+
+        total = price * state["soluong"]
+
+        msg = f"""
 🎉 XÁC NHẬN ĐƠN 🎉
 
 Tên: {state['name']}
@@ -184,32 +255,41 @@ SĐT: {state['phone']}
 
 {state['soluong']} lạng loại {state['loai']}
 
-Tổng: {tong}
+Tổng: {total}đ
 """
 
-    send_message(user_id,msg)
+        send_message(user_id,msg)
 
-    order = state.copy()
-    order["tong"] = tong
+        order = state.copy()
+        order["total"] = total
 
-    save_order(order)
+        save_order(order)
 
-    send_telegram(msg)
+        send_telegram(msg)
 
-    user_state[user_id] = {}
+        users[user_id] = {"step":"start"}
 
-# ===== webhook =====
+        return
+
+
+    # ===== OUTSIDE QUESTION =====
+    reply = ai_reply(text)
+    send_message(user_id,reply)
+
+
+
+# ===== WEBHOOK VERIFY =====
 @app.route("/", methods=["GET"])
-
 def verify():
 
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
         return request.args.get("hub.challenge")
 
-    return "error"
+    return "wrong token"
 
+
+# ===== WEBHOOK MESSAGE =====
 @app.route("/", methods=["POST"])
-
 def webhook():
 
     data = request.json
@@ -226,9 +306,11 @@ def webhook():
 
                     text = messaging["message"].get("text","")
 
-                    handle_message(sender,text)
+                    if text:
+                        handle_message(sender,text)
 
     return "ok"
 
+
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=5000)
