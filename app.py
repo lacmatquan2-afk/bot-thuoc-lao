@@ -86,7 +86,7 @@ def send_message(uid,text):
 # ================== TELEGRAM ==================
 def send_telegram(text):
 
-    if not TELEGRAM_BOT_TOKEN:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
     url=f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -127,15 +127,16 @@ def calculate_total(loai,soluong):
     return total+SHIP_FEE,SHIP_FEE
 
 # ================== DETECT ==================
+
 def detect_loai(text):
 
-    if re.search(r'loai\s*1|120k|nhẹ',text):
+    if re.search(r'\b(1|loai 1|loại 1|120k|nhẹ)\b',text):
         return "loại 1"
 
-    if re.search(r'loai\s*2|150k|vừa',text):
+    if re.search(r'\b(2|loai 2|loại 2|150k|vừa)\b',text):
         return "loại 2"
 
-    if re.search(r'loai\s*3|180k|nặng',text):
+    if re.search(r'\b(3|loai 3|loại 3|180k|nặng)\b',text):
         return "loại 3"
 
     return None
@@ -143,11 +144,11 @@ def detect_loai(text):
 
 def detect_quantity(text):
 
-    kg=re.search(r'(\d+)\s*kg',text)
-    lang=re.search(r'(\d+)\s*lạng',text)
+    kg=re.search(r'(\d+(?:\.\d+)?)\s*(kg|ký)',text)
+    lang=re.search(r'(\d+)\s*(lạng|lang)',text)
 
     if kg:
-        return int(kg.group(1))*10
+        return int(float(kg.group(1))*10)
 
     if lang:
         return int(lang.group(1))
@@ -167,7 +168,7 @@ def detect_phone(text):
 
 def detect_name(text):
 
-    match=re.search(r'(?:tên|toi la|tôi là|em là)\s+([a-zA-ZÀ-ỹ\s]{2,30})',text)
+    match=re.search(r'(?:tên|toi la|tôi là|em là|anh là)\s+([a-zA-ZÀ-ỹ\s]{2,30})',text)
 
     if match:
         return match.group(1).title()
@@ -243,6 +244,44 @@ def reply_comment(comment_id):
     except:
         pass
 
+# ================== CHECK ORDER ==================
+def check_and_close(sender,state):
+
+    if all([state["loai"],state["soluong"],state["phone"],state["address"],state["name"]]):
+
+        total,ship=calculate_total(state["loai"],state["soluong"])
+
+        ship_text="Miễn phí ship" if ship==0 else f"Ship {SHIP_FEE}"
+
+        confirm=(
+            f"🎉 XÁC NHẬN ĐƠN 🎉\n"
+            f"Tên: {state['name']}\n"
+            f"SĐT: {state['phone']}\n"
+            f"Địa chỉ: {state['address']}\n\n"
+            f"{state['soluong']} lạng {state['loai']}\n"
+            f"{ship_text}\n"
+            f"Tổng: {total:,}đ"
+        )
+
+        send_message(sender,confirm)
+        send_telegram(confirm)
+
+        save_order([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            state["loai"],
+            state["soluong"],
+            total,
+            state["name"],
+            state["phone"],
+            state["address"]
+        ])
+
+        user_data[sender]={"step":0}
+
+        return True
+
+    return False
+
 # ================== WEBHOOK ==================
 @app.route("/webhook",methods=["POST"])
 def webhook():
@@ -253,7 +292,6 @@ def webhook():
 
         for entry in data["entry"]:
 
-            # COMMENT
             if "changes" in entry:
 
                 for change in entry["changes"]:
@@ -266,14 +304,12 @@ def webhook():
 
                             reply_comment(value["comment_id"])
 
-            # MESSAGE
             for event in entry.get("messaging",[]):
 
                 if "message" not in event:
                     continue
 
                 sender=event["sender"]["id"]
-
                 text=event["message"].get("text","").lower()
 
                 last_reply_time[sender]=time.time()
@@ -286,14 +322,8 @@ def webhook():
                         "phone":None,
                         "address":None,
                         "name":None,
-                        "step":0
+                        "step":1
                     }
-
-                state=user_data[sender]
-
-                # ================== STEP BOT ==================
-
-                if state["step"]==0:
 
                     send_message(
                         sender,
@@ -304,120 +334,42 @@ def webhook():
                         "Bạn lấy loại mấy ạ?"
                     )
 
-                    state["step"]=1
                     return "OK",200
 
+                state=user_data[sender]
 
-                if state["step"]==1:
+                # detect auto
+                state["loai"]=state["loai"] or detect_loai(text)
+                state["soluong"]=state["soluong"] or detect_quantity(text)
+                state["phone"]=state["phone"] or detect_phone(text)
+                state["name"]=state["name"] or detect_name(text)
+                state["address"]=state["address"] or detect_address(text)
 
-                    loai=detect_loai(text)
-
-                    if loai:
-
-                        state["loai"]=loai
-
-                        send_message(sender,"Bạn lấy mấy lạng ạ?")
-
-                        state["step"]=2
-
-                    else:
-
-                        send_message(sender,"Bạn chọn loại 1 2 hay 3 ạ?")
-
+                # nếu đủ thông tin -> chốt
+                if check_and_close(sender,state):
                     return "OK",200
 
-
-                if state["step"]==2:
-
-                    qty=detect_quantity(text)
-
-                    if qty:
-
-                        state["soluong"]=qty
-
-                        send_message(sender,"Bạn cho mình xin tên người nhận")
-
-                        state["step"]=3
-
-                    else:
-
-                        send_message(sender,"Bạn lấy mấy lạng ạ?")
-
+                # hỏi tiếp
+                if not state["loai"]:
+                    send_message(sender,"Bạn lấy loại mấy ạ? (1 / 2 / 3)")
                     return "OK",200
 
-
-                if state["step"]==3:
-
-                    name=detect_name(text) or text
-
-                    state["name"]=name
-
-                    send_message(sender,"Bạn cho mình xin số điện thoại")
-
-                    state["step"]=4
-
+                if not state["soluong"]:
+                    send_message(sender,"Bạn lấy mấy lạng ạ?")
                     return "OK",200
 
-
-                if state["step"]==4:
-
-                    phone=detect_phone(text)
-
-                    if phone:
-
-                        state["phone"]=phone
-
-                        send_message(sender,"Bạn gửi giúp địa chỉ nhận hàng")
-
-                        state["step"]=5
-
-                    else:
-
-                        send_message(sender,"Bạn gửi số điện thoại giúp mình")
-
+                if not state["name"]:
+                    send_message(sender,"Bạn cho mình xin tên người nhận")
                     return "OK",200
 
-
-                if state["step"]==5:
-
-                    state["address"]=text
-
-                    total,ship=calculate_total(
-                        state["loai"],
-                        state["soluong"]
-                    )
-
-                    ship_text="Miễn phí ship" if ship==0 else f"Ship {SHIP_FEE}"
-
-                    confirm=(
-                        f"🎉 XÁC NHẬN ĐƠN 🎉\n"
-                        f"Tên: {state['name']}\n"
-                        f"SĐT: {state['phone']}\n"
-                        f"Địa chỉ: {state['address']}\n\n"
-                        f"{state['soluong']} lạng {state['loai']}\n"
-                        f"{ship_text}\n"
-                        f"Tổng: {total:,}đ"
-                    )
-
-                    send_message(sender,confirm)
-
-                    send_telegram(confirm)
-
-                    save_order([
-                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        state["loai"],
-                        state["soluong"],
-                        total,
-                        state["name"],
-                        state["phone"],
-                        state["address"]
-                    ])
-
-                    user_data[sender]={"step":0}
-
+                if not state["phone"]:
+                    send_message(sender,"Bạn gửi số điện thoại giúp mình")
                     return "OK",200
 
-                # AI ngoài luồng
+                if not state["address"]:
+                    send_message(sender,"Bạn gửi giúp địa chỉ nhận hàng")
+                    return "OK",200
+
                 reply=ai_reply(text)
 
                 if reply:
@@ -426,7 +378,6 @@ def webhook():
     return "OK",200
 
 
-# ================== VERIFY ==================
 @app.route("/webhook",methods=["GET"])
 def verify():
 
@@ -435,7 +386,6 @@ def verify():
 
     return "Verify token sai"
 
-# ================== HOME ==================
 @app.route("/")
 def home():
     return "BOT AI PRO RUNNING 🚀"
