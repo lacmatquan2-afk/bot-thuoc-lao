@@ -79,20 +79,42 @@ def detect_info(text):
 # ================= AI BÁN HÀNG THỰC CHIẾN =================
 
 def get_ai_response(uid, user_msg):
-    if not client: return "Dạ anh lấy thuốc loại nào ạ?"
+    if not client: return "Dạ anh lấy loại mấy lạng và cho em xin địa chỉ ạ?"
     
     state = users.get(uid, {})
-    prompt = f"""
-    Bạn là chuyên gia chốt đơn Thuốc Lào Quảng Định. 
-    Thông tin khách đã cung cấp: {json.dumps(state, ensure_ascii=False)}
     
-    QUY TẮC:
-    1. Không chào hỏi dài dòng. 
-    2. Nếu thiếu thông tin nào (loại, số lượng, sđt, địa chỉ), phải hỏi bằng được thông tin đó.
-    3. Luôn nhấn mạnh: 'Mua 3 lạng được Miễn phí ship'.
-    4. Giọng văn: Nhiệt tình, dân dã, quyết đoán.
-    5. Nếu khách hỏi lan man, kéo khách về việc đặt hàng.
+    # Đây là bộ não của Bot - Đừng xóa dòng này
+    prompt = f"""
+    Bạn là chuyên gia chốt đơn của Thuốc Lào Quảng Định. 
+    SẢN PHẨM: 
+    - Đặc điểm: Chính gốc Quảng Định, Chuẩn Mộc, Êm Say, Không Hồ, Không Pha Trộn.
+    - Loại 1: 120k/lạng (Êm, ngọt hậu).
+    - Loại 2: 150k/lạng (Vừa tầm, khói thơm).
+    - Loại 3: 180k/lạng (Đậm, Phê, Nặng đô).
+    - Ưu đãi: Mua từ 3 lạng FREE SHIP.
+
+    TRẠNG THÁI ĐƠN HÀNG HIỆN TẠI: {json.dumps(state, ensure_ascii=False)}
+
+    QUY TẮC BẮT BUỘC:
+    1. Tuyệt đối không chat lan man. Mục tiêu duy nhất là lấy đủ: LOẠI, SỐ LƯỢNG, SĐT, ĐỊA CHỈ.
+    2. Nếu khách chưa chọn loại: Phải liệt kê lại 3 loại 120k-150k-180k.
+    3. Nếu khách mua dưới 3 lạng: Hãy khéo léo mời khách mua lên 3 lạng để được Freeship (Tiết kiệm 30k ship).
+    4. Nếu khách hỏi "có ngon không", "có phê không": Cam kết thuốc chuẩn mộc, không hồ, hút chỉ có say.
+    5. Ngôn ngữ: Dân dã, gọi khách là 'anh', xưng 'em' hoặc 'nhà em'. Trả lời ngắn gọn, dứt khoát.
     """
+    
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.4 # Để bot trả lời ổn định, không bị "sáng tạo" quá mức
+        )
+        return res.choices[0].message.content
+    except:
+        return "Dạ anh lấy loại mấy và mấy lạng để em lên đơn freeship cho mình luôn ạ?"
     
     try:
         res = client.chat.completions.create(
@@ -229,9 +251,22 @@ def webhook():
                     continue
                 last_interact[sender_id] = now
 
-                # Khởi tạo user nếu mới
+               # Khởi tạo user nếu mới
                 if sender_id not in users:
                     users[sender_id] = {"loai":None, "soluong":None, "phone":None, "address":None, "name":None}
+                    
+                    # CÂU CHÀO THẦN THÁNH Ở ĐÂY:
+                    welcome_msg = (
+                        "Chào anh! Cảm ơn anh đã quan tâm Thuốc lào Quảng Định chính gốc.\n\n"
+                        "Thuốc nhà em cam kết CHUẨN MỘC - ÊM SAY - KHÔNG HỒ - KHÔNG PHA TRỘN.\n"
+                        "Anh tham khảo 3 loại ngon nhất bên em:\n"
+                        "🔹 Loại 1: 120k/lạng (Êm, ngọt hậu)\n"
+                        "🔹 Loại 2: 150k/lạng (Vừa tầm, khói thơm)\n"
+                        "🔹 Loại 3: 180k/lạng (Đậm - Say - Nặng đô)\n\n"
+                        "🔥 Mua 3 lạng được FREE SHIP. Anh lấy loại nào và mấy lạng để em ship ạ?"
+                    )
+                    send_fb_message(sender_id, welcome_msg)
+                    continue
 
                 # Cập nhật thông tin từ tin nhắn
                 extracted = detect_info(msg_text)
@@ -260,3 +295,4 @@ if __name__ == "__main__":
     threading.Thread(target=keep_alive, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
