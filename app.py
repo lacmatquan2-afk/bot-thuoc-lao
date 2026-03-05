@@ -10,7 +10,7 @@ from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 from openai import OpenAI
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # ================= CONFIG =================
 
@@ -421,8 +421,9 @@ def verify():
 def home():
     return "BOT AI PRO MAX RUNNING 🚀"
 
-if _name__=="__main_":
+if __name__=="__main__":
 
     port=int(os.environ.get("PORT",10000))
 
     app.run(host="0.0.0.0",port=port)
+
